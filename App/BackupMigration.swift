@@ -136,8 +136,7 @@ enum BackupMigration {
             let pct = (dict["pct"] as? Double) ?? 0
             let cfi = dict["cfi"] as? String
             let lastRead = parseDate(dict["lastRead"]) ?? Date()
-            let ratio = dict["swipesPerPosition"] as? Double
-            out[k] = ReadingProgress(pct: pct, cfi: cfi, lastRead: lastRead, swipesPerPosition: ratio)
+            out[k] = ReadingProgress(pct: pct, cfi: cfi, lastRead: lastRead)
         }
         return out
     }

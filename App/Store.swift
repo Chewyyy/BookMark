@@ -696,18 +696,6 @@ final class Store: ObservableObject {
         scheduleSave()
     }
 
-    /// Persist the visible-pages-per-position ratio observed during a reading
-    /// session. The reader uses this on next open to render an accurate
-    /// "Page X of Y" total from the first swipe, instead of having to
-    /// re-establish the ratio after a few swipes.
-    func updateSwipesPerPosition(bookId: String, ratio: Double) {
-        guard ratio > 0, ratio.isFinite else { return }
-        var p = progress[bookId] ?? ReadingProgress()
-        p.swipesPerPosition = ratio
-        progress[bookId] = p
-        scheduleSave()
-    }
-
     // MARK: - Sessions
 
     func addSession(_ s: ReadingSession) {

@@ -532,12 +532,6 @@ struct ReaderView: View {
         )
         store.endLiveReadingSession(bookId: book.id)
         store.addSession(session)
-        // Persist this session's observed swipes/position ratio so the next
-        // session opens with an accurate "Page X of Y" total from the first
-        // swipe instead of having to re-establish the ratio mid-session.
-        if let ratio = model.liveSwipesPerPosition {
-            store.updateSwipesPerPosition(bookId: book.id, ratio: ratio)
-        }
     }
 
     private func captureSessionStartIfNeeded() {
@@ -579,10 +573,6 @@ struct ReaderView: View {
 
         model.settings = store.readerSettings
         model.readiumProgress = store.progress[book.id]?.pct ?? 0
-        // Seed dynamic-page-total math with the cached ratio from this book's
-        // last session BEFORE resetting session metrics — resetReadiumSessionMetrics
-        // reads cachedSwipesPerPosition to decide whether mid-session rescale is needed.
-        model.cachedSwipesPerPosition = store.progress[book.id]?.swipesPerPosition
         model.resetReadiumSessionMetrics()
         sessionStartProgress = model.readiumProgress
         sessionStartPage = nil
@@ -663,14 +653,8 @@ final class ReaderModel: ObservableObject {
     @Published var readiumChapterPosition: Int?
     @Published var readiumChapterPositionTotal: Int?
     @Published var readiumChapterTitle: String?
-    @Published var readiumPublisherPageLabel: String?
-    @Published var readiumPublisherPageCount: Int?
     @Published private(set) var readiumSessionPagesRead = 0
     @Published private var displayPageOverride: Int?
-    var cachedSwipesPerPosition: Double?
-    private var sessionSwipeStartPosition: Int?
-    private var sessionSwipeCount = 0
-    private var sessionRatioRescaleApplied = false
     private var pendingReadiumPageTurnDirection: Int?
     @Published var error: String?
     @Published var pendingInitialPage: InitialPage?
@@ -728,31 +712,8 @@ final class ReaderModel: ObservableObject {
         return "Page \(estimatedBookPage)"
     }
 
-    private var publisherPageText: String? {
-        guard let label = readiumPublisherPageLabel?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !label.isEmpty,
-              let count = readiumPublisherPageCount,
-              count > 0 else {
-            return nil
-        }
-        return "Page \(label) of \(count)"
-    }
-
     var displayPageTotal: Int {
         max(1, readiumTotalPositions ?? estimatedBookPages)
-    }
-
-    var liveSwipesPerPosition: Double? {
-        guard sessionSwipeCount > 0,
-              let start = sessionSwipeStartPosition,
-              let current = readiumPosition else {
-            return cachedSwipesPerPosition
-        }
-        let positionDelta = current - start
-        guard positionDelta > 0 else {
-            return cachedSwipesPerPosition
-        }
-        return Double(sessionSwipeCount) / Double(positionDelta)
     }
 
     var displayPage: Int {
@@ -802,16 +763,7 @@ final class ReaderModel: ObservableObject {
 
     func resetReadiumSessionMetrics() {
         readiumSessionPagesRead = 0
-        readiumPublisherPageLabel = nil
-        readiumPublisherPageCount = nil
         pendingReadiumPageTurnDirection = nil
-        sessionSwipeStartPosition = nil
-        sessionSwipeCount = 0
-        // If we already have a cached ratio at session start, rawDisplayPage
-        // produces ratio-scaled values from the first swipe, so no mid-session
-        // rescale is needed. Only sessions that start with NO cached ratio
-        // need to rescale when live samples become available.
-        sessionRatioRescaleApplied = (cachedSwipesPerPosition != nil)
     }
 
     func updateReadiumLocation(_ location: ReadiumLocation) {
@@ -829,39 +781,11 @@ final class ReaderModel: ObservableObject {
         readiumChapterPosition = location.chapterPosition
         readiumChapterPositionTotal = location.chapterPositionTotal
         readiumChapterTitle = location.chapterTitle
-        readiumPublisherPageLabel = location.publisherPageLabel
-        readiumPublisherPageCount = location.publisherPageCount
         if let idx = location.resourceIndex { chapterIndex = idx }
-
-        // Anchor the swipe-rate baseline at the resumed position so the ratio
-        // measures THIS session's swipes per position. Captured once per
-        // session at the first known location.
-        if sessionSwipeStartPosition == nil, let pos = location.bookPosition {
-            sessionSwipeStartPosition = pos
-        }
-
-        // First time the ratio becomes known mid-session (no cached value at
-        // open, but we've now collected enough live samples), rescale the
-        // page override so the displayed page matches the new scaled total
-        // proportionally. Without this, the override sits at an unscaled
-        // value while displayPageTotal suddenly drops, jumping the "X of Y"
-        // ratio.
-        if !sessionRatioRescaleApplied, let ratio = liveSwipesPerPosition {
-            if let override = displayPageOverride {
-                displayPageOverride = boundedDisplayPage(Int((Double(override) * ratio).rounded()))
-            }
-            sessionRatioRescaleApplied = true
-        }
 
         let estimated = boundedDisplayPage(location.bookPosition ?? rawDisplayPage)
         guard oldLocator != location.locatorJSON else {
-            if let expectedDirection {
-                pendingReadiumPageTurnDirection = nil
-                applyExpectedReadiumPageTurn(
-                    from: oldPage,
-                    direction: expectedDirection
-                )
-            } else if displayPageOverride == nil {
+            if displayPageOverride == nil {
                 displayPageOverride = estimated
             }
             return
@@ -869,30 +793,14 @@ final class ReaderModel: ObservableObject {
 
         pendingReadiumPageTurnDirection = nil
         if let expectedDirection {
-            applyExpectedReadiumPageTurn(
-                from: oldPage,
-                direction: expectedDirection
-            )
+            displayPageOverride = boundedDisplayPage(oldPage + expectedDirection)
+            readiumSessionPagesRead = max(0, readiumSessionPagesRead + expectedDirection)
         } else if readiumProgress > oldProgress {
             displayPageOverride = boundedDisplayPage(max(estimated, oldPage + 1))
         } else if readiumProgress < oldProgress {
             displayPageOverride = boundedDisplayPage(min(estimated, oldPage - 1))
         } else {
             displayPageOverride = estimated
-        }
-    }
-
-    private func applyExpectedReadiumPageTurn(
-        from oldPage: Int,
-        direction: Int
-    ) {
-        displayPageOverride = boundedDisplayPage(oldPage + direction)
-        readiumSessionPagesRead = max(0, readiumSessionPagesRead + direction)
-        // Count forward swipes for the ratio sample. Backward swipes are
-        // intentionally excluded because re-reading content doesn't add fresh
-        // sample data and can skew the ratio.
-        if direction > 0 {
-            sessionSwipeCount += 1
         }
     }
 

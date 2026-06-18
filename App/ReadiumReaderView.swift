@@ -471,7 +471,6 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
         let navigator = host.navigator
         let preferences = readiumPreferences(for: settings)
         context.coordinator.positionsByResource = positionsByResource
-        context.coordinator.publisherPages = publisherPages
         context.coordinator.publication = publication
         bridge.navigator = navigator
         bridge.animator = host.pageTurnAnimator
@@ -554,7 +553,6 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
         var lastJumpLocatorJSON: String?
         var lastChapterJumpID: UUID?
         var positionsByResource: [[Locator]]
-        var publisherPages: [ReadiumPublisherPage]
         var publication: Publication
         private var appliedHighlightIDs: [String] = []
         private let onLocationChange: (ReadiumLocation) -> Void
@@ -564,13 +562,11 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
             onLocationChange: @escaping (ReadiumLocation) -> Void,
             onHighlightSelection: @escaping (String, String) -> Void,
             positionsByResource: [[Locator]],
-            publisherPages: [ReadiumPublisherPage],
             publication: Publication
         ) {
             self.onLocationChange = onLocationChange
             self.onHighlightSelection = onHighlightSelection
             self.positionsByResource = positionsByResource
-            self.publisherPages = publisherPages
             self.publication = publication
         }
 
@@ -612,26 +608,8 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
                 resourceTotal: publication.readingOrder.count,
                 chapterPosition: chapterPos,
                 chapterPositionTotal: chapterTotal,
-                chapterTitle: title,
-                publisherPageLabel: publisherPageLabel(for: progress),
-                publisherPageCount: publisherPages.isEmpty ? nil : publisherPages.count
+                chapterTitle: title
             ))
-        }
-
-        private func publisherPageLabel(for progress: Double) -> String? {
-            guard !publisherPages.isEmpty else { return nil }
-            let boundedProgress = max(0, min(1, progress))
-            var low = 0
-            var high = publisherPages.count
-            while low < high {
-                let mid = (low + high) / 2
-                if publisherPages[mid].totalProgress <= boundedProgress {
-                    low = mid + 1
-                } else {
-                    high = mid
-                }
-            }
-            return publisherPages[max(0, low - 1)].label
         }
 
         func navigator(_ navigator: Navigator, presentError error: NavigatorError) {}
@@ -662,58 +640,6 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
             }
             navigator.apply(decorations: decorations, in: "bookMarkHighlights")
         }
-    }
-}
-
-private extension Publication {
-    func resolvedPublisherPages(positionsByResource: [[Locator]]) async -> [ReadiumPublisherPage] {
-        guard !pageList.isEmpty else { return [] }
-
-        var pages: [ReadiumPublisherPage] = []
-        pages.reserveCapacity(pageList.count)
-
-        for (index, link) in pageList.enumerated() {
-            guard let locator = await locate(link),
-                  let progress = totalProgress(for: locator, positionsByResource: positionsByResource) else {
-                continue
-            }
-            let label = link.title?.trimmingCharacters(in: .whitespacesAndNewlines)
-            pages.append(ReadiumPublisherPage(
-                totalProgress: max(0, min(1, progress)),
-                label: label?.isEmpty == false ? label! : "\(index + 1)"
-            ))
-        }
-
-        return pages.sorted {
-            if $0.totalProgress == $1.totalProgress {
-                return $0.label.localizedStandardCompare($1.label) == .orderedAscending
-            }
-            return $0.totalProgress < $1.totalProgress
-        }
-    }
-
-    private func totalProgress(for locator: Locator, positionsByResource: [[Locator]]) -> Double? {
-        if let totalProgression = locator.locations.totalProgression {
-            return max(0, min(1, totalProgression))
-        }
-
-        let totalPositions = positionsByResource.reduce(0) { $0 + $1.count }
-        if let position = locator.locations.position, totalPositions > 1 {
-            return max(0, min(1, Double(position - 1) / Double(totalPositions - 1)))
-        }
-
-        guard let resourceIndex = readingOrder.firstIndex(where: { $0.url().isEquivalentTo(locator.href) }),
-              positionsByResource.indices.contains(resourceIndex),
-              let resourceStart = positionsByResource[resourceIndex].first?.locations.totalProgression else {
-            return nil
-        }
-
-        let nextResourceStart = positionsByResource
-            .dropFirst(resourceIndex + 1)
-            .compactMap { $0.first?.locations.totalProgression }
-            .first ?? 1
-        let resourceProgress = locator.locations.progression ?? 0
-        return max(0, min(1, resourceStart + ((nextResourceStart - resourceStart) * resourceProgress)))
     }
 }
 

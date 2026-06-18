@@ -95,18 +95,11 @@ struct ReadingProgress: Codable, Hashable {
     var pct: Double
     var cfi: String?
     var lastRead: Date
-    /// Visible-pages-per-Readium-position ratio observed during reading on the
-    /// last session. Used to derive a dynamic "Page X of Y" total at the
-    /// user's current device + font + margins (Apple Books / Kindle style),
-    /// since Readium's `bookPositionTotal` is a stable content count rather
-    /// than a swipe count. nil until the first session collects samples.
-    var swipesPerPosition: Double?
 
-    init(pct: Double = 0, cfi: String? = nil, lastRead: Date = Date(), swipesPerPosition: Double? = nil) {
+    init(pct: Double = 0, cfi: String? = nil, lastRead: Date = Date()) {
         self.pct = pct
         self.cfi = cfi
         self.lastRead = lastRead
-        self.swipesPerPosition = swipesPerPosition
     }
 }
 
