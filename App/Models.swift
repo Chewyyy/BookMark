@@ -51,11 +51,6 @@ struct ReadingSession: Identifiable, Codable, Hashable {
     var end: Date?
     var secs: Int
     var pages: Int?
-    /// Readium position-delta for the session. Device-independent (one EPUB
-    /// position ≈ 1024 chars of content), unlike `pages` which counts visible
-    /// swipes and therefore varies with screen size / font / spread. Preferred
-    /// for cross-device aggregates; nil for legacy sessions and CSV imports.
-    var posPages: Int?
     var progressDelta: Double?
     var manual: Bool
 
@@ -67,7 +62,6 @@ struct ReadingSession: Identifiable, Codable, Hashable {
         end: Date? = nil,
         secs: Int,
         pages: Int? = nil,
-        posPages: Int? = nil,
         progressDelta: Double? = nil,
         manual: Bool = false
     ) {
@@ -78,17 +72,9 @@ struct ReadingSession: Identifiable, Codable, Hashable {
         self.end = end
         self.secs = secs
         self.pages = pages
-        self.posPages = posPages
         self.progressDelta = progressDelta
         self.manual = manual
     }
-}
-
-extension ReadingSession {
-    /// Preferred page count for cross-device aggregates (totals, pace, weekly
-    /// chart, widget snapshot). Falls back to swipe-based `pages` for sessions
-    /// captured before posPages was tracked, so legacy data still contributes.
-    var aggregatePages: Int { posPages ?? pages ?? 0 }
 }
 
 struct ReadingProgress: Codable, Hashable {

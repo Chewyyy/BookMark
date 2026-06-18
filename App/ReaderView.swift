@@ -24,7 +24,6 @@ struct ReaderView: View {
     @State private var sessionStartedAt = Date()
     @State private var sessionStartProgress: Double?
     @State private var sessionStartPage: Int?
-    @State private var sessionStartPosition: Int?
     @State private var sessionSaved = false
     @State private var elapsed = 0
     @State private var timer: Timer?
@@ -57,6 +56,9 @@ struct ReaderView: View {
                             cfi: location.locatorJSON
                         )
                         maybePromptFinish()
+                    },
+                    onChapterPageChange: { state in
+                        model.updateReadiumChapterPageState(state)
                     },
                     onPageTurn: { direction in
                         model.expectReadiumPageTurn(direction)
@@ -107,7 +109,6 @@ struct ReaderView: View {
             sessionStartedAt = Date()
             sessionStartProgress = nil
             sessionStartPage = nil
-            sessionStartPosition = nil
             sessionSaved = false
             elapsed = 0
             startTimer()
@@ -511,14 +512,6 @@ struct ReaderView: View {
             let endPage = model.epubURL != nil ? model.displayPage : model.estimatedBookPage
             return max(0, endPage - startPage)
         }()
-        // Device-independent counterpart to pagesRead. nil for legacy / non-EPUB
-        // sessions; the snapshot aggregator falls back to pagesRead when this
-        // is missing so historical numbers don't change.
-        let posPagesRead: Int? = {
-            guard let start = sessionStartPosition, let end = model.readiumPosition else { return nil }
-            let delta = end - start
-            return delta > 0 ? delta : nil
-        }()
         let session = ReadingSession(
             bookId: book.id,
             bookTitle: book.title,
@@ -526,7 +519,6 @@ struct ReaderView: View {
             end: Date(),
             secs: elapsed,
             pages: pagesRead > 0 ? pagesRead : nil,
-            posPages: posPagesRead,
             progressDelta: progressDelta > 0 ? progressDelta : nil,
             manual: false
         )
@@ -540,11 +532,6 @@ struct ReaderView: View {
         }
         if sessionStartPage == nil {
             sessionStartPage = model.epubURL != nil ? model.displayPage : model.estimatedBookPage
-        }
-        // Capture Readium's device-independent book position so the session's
-        // posPages delta survives switching devices (e.g. iPhone → iPad).
-        if sessionStartPosition == nil, model.epubURL != nil, let pos = model.readiumPosition {
-            sessionStartPosition = pos
         }
     }
 
@@ -576,7 +563,6 @@ struct ReaderView: View {
         model.resetReadiumSessionMetrics()
         sessionStartProgress = model.readiumProgress
         sessionStartPage = nil
-        sessionStartPosition = nil
         model.epubURL = url
         store.beginLiveReadingSession(
             bookId: book.id,
@@ -652,7 +638,9 @@ final class ReaderModel: ObservableObject {
     @Published var readiumResourceTotal: Int?
     @Published var readiumChapterPosition: Int?
     @Published var readiumChapterPositionTotal: Int?
+    @Published var readiumChapterPageState: ReadiumChapterPageState?
     @Published var readiumChapterTitle: String?
+    @Published private var readiumDisplayIsReady = false
     @Published private(set) var readiumSessionPagesRead = 0
     @Published private var displayPageOverride: Int?
     private var pendingReadiumPageTurnDirection: Int?
@@ -699,6 +687,7 @@ final class ReaderModel: ObservableObject {
 
     var statusBottom: String {
         if epubURL != nil {
+            guard readiumDisplayIsReady else { return "Calculating..." }
             let percent = Int((overallProgress * 100).rounded())
             return "Page \(displayPage) of \(displayPageTotal) · \(percent)%"
         }
@@ -707,6 +696,7 @@ final class ReaderModel: ObservableObject {
 
     var pageOnlyText: String {
         if epubURL != nil {
+            guard readiumDisplayIsReady else { return "Calculating..." }
             return "Page \(displayPage)"
         }
         return "Page \(estimatedBookPage)"
@@ -727,6 +717,11 @@ final class ReaderModel: ObservableObject {
 
     var chapterPagesLeftText: String {
         if epubURL != nil {
+            if let pageState = readiumChapterPageState, pageState.totalPages > 0 {
+                let left = max(0, pageState.totalPages - pageState.currentPage)
+                if left == 0 { return "End of chapter" }
+                return "\(left) page\(left == 1 ? "" : "s") left in chapter"
+            }
             if let pos = readiumChapterPosition, let total = readiumChapterPositionTotal, total > 0 {
                 let left = max(0, total - pos)
                 if left == 0 { return "End of chapter" }
@@ -764,6 +759,25 @@ final class ReaderModel: ObservableObject {
     func resetReadiumSessionMetrics() {
         readiumSessionPagesRead = 0
         pendingReadiumPageTurnDirection = nil
+        readiumDisplayIsReady = false
+        displayPageOverride = nil
+        readiumPosition = nil
+        readiumTotalPositions = nil
+        readiumLocatorJSON = nil
+        readiumResourceIndex = nil
+        readiumResourceTotal = nil
+        readiumChapterPosition = nil
+        readiumChapterPositionTotal = nil
+        readiumChapterPageState = nil
+        readiumChapterTitle = nil
+    }
+
+    func updateReadiumChapterPageState(_ state: ReadiumChapterPageState?) {
+        readiumChapterPageState = state
+        readiumDisplayIsReady = state != nil
+        if let idx = state?.resourceIndex {
+            chapterIndex = idx
+        }
     }
 
     func updateReadiumLocation(_ location: ReadiumLocation) {
@@ -781,7 +795,13 @@ final class ReaderModel: ObservableObject {
         readiumChapterPosition = location.chapterPosition
         readiumChapterPositionTotal = location.chapterPositionTotal
         readiumChapterTitle = location.chapterTitle
-        if let idx = location.resourceIndex { chapterIndex = idx }
+        if let idx = location.resourceIndex {
+            chapterIndex = idx
+            if readiumChapterPageState?.resourceIndex != idx {
+                readiumChapterPageState = nil
+                readiumDisplayIsReady = false
+            }
+        }
 
         let estimated = boundedDisplayPage(location.bookPosition ?? rawDisplayPage)
         guard oldLocator != location.locatorJSON else {

@@ -247,12 +247,12 @@ final class Store: ObservableObject {
             }
         }
 
-        let totalPages = sessions.reduce(0) { $0 + $1.aggregatePages }
-        let pageSessions = sessions.filter { $0.aggregatePages > 0 }
+        let totalPages = sessions.reduce(0) { $0 + ($1.pages ?? 0) }
+        let pageSessions = sessions.filter { ($0.pages ?? 0) > 0 }
         let avgPages = pageSessions.isEmpty ? 0 : totalPages / pageSessions.count
 
         var pageByDay: [String: Int] = [:]
-        for s in sessions { pageByDay[Fmt.dayKey(s.start), default: 0] += s.aggregatePages }
+        for s in sessions { pageByDay[Fmt.dayKey(s.start), default: 0] += s.pages ?? 0 }
         var weekPages = 0
         for i in 0..<7 {
             if let d = cal.date(byAdding: .day, value: -i, to: Date()) {
@@ -261,7 +261,7 @@ final class Store: ObservableObject {
         }
         let pacePool = pageSessions
         let paceTotalMins = max(1, pacePool.reduce(0) { $0 + $1.secs }) / 60
-        let avgPace = pacePool.isEmpty ? 0.0 : Double(pacePool.reduce(0) { $0 + $1.aggregatePages }) / Double(paceTotalMins)
+        let avgPace = pacePool.isEmpty ? 0.0 : Double(pacePool.reduce(0) { $0 + ($1.pages ?? 0) }) / Double(paceTotalMins)
 
         // 7-day series, oldest -> newest
         var labels: [String] = []
@@ -270,10 +270,10 @@ final class Store: ObservableObject {
         let dayFmt = DateFormatter()
         dayFmt.dateFormat = "EEEEE"
         var paceByDay: [String: (pages: Int, secs: Int)] = [:]
-        for s in sessions where s.aggregatePages > 0 && s.secs > 0 {
+        for s in sessions where (s.pages ?? 0) > 0 && s.secs > 0 {
             let k = Fmt.dayKey(s.start)
             var v = paceByDay[k] ?? (0, 0)
-            v.pages += s.aggregatePages
+            v.pages += s.pages ?? 0
             v.secs += s.secs
             paceByDay[k] = v
         }

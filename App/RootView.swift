@@ -110,7 +110,6 @@ private struct BookIDWrapper: Identifiable { let id: String }
 
 private struct BottomNav: View {
     @Binding var selected: Tab
-    @Environment(\.horizontalSizeClass) private var hSizeClass
 
     var body: some View {
         HStack(spacing: 0) {
@@ -118,11 +117,6 @@ private struct BottomNav: View {
             navButton(.journal, label: "Journal", system: "calendar")
             navButton(.stats,   label: "Stats",   system: "chart.bar")
         }
-        // Buttons stop stretching after ~520pt so on iPad they don't form a
-        // sparse row across 1024+ points. The outer .infinity keeps the row
-        // centered while the background modifier below still spans edge-to-edge.
-        .frame(maxWidth: hSizeClass == .regular ? 520 : .infinity)
-        .frame(maxWidth: .infinity)
         .padding(.top, 6)
         .padding(.bottom, 0)
         .background(

@@ -4,7 +4,6 @@ import UniformTypeIdentifiers
 
 struct LibraryView: View {
     @EnvironmentObject private var store: Store
-    @Environment(\.horizontalSizeClass) private var hSizeClass
     @State private var showImporter = false
     @State private var showFolderPicker = false
     @State private var folderPickerPurpose: FolderPickerPurpose = .rescan
@@ -19,9 +18,7 @@ struct LibraryView: View {
     let onOpenBook: (String) -> Void
     var onOpenJournal: () -> Void = {}
 
-    private var columns: [GridItem] {
-        Layout.libraryGridColumns(for: hSizeClass)
-    }
+    private let columns = [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -53,7 +50,6 @@ struct LibraryView: View {
                         grid
                     }
                 }
-                .readableContentWidth(hSizeClass == .regular ? 1000 : .infinity)
                 .padding(.bottom, 24)
             }
             .background(Theme.background)

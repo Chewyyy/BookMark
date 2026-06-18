@@ -3,7 +3,6 @@ import UniformTypeIdentifiers
 
 struct StatsView: View {
     @EnvironmentObject private var store: Store
-    @Environment(\.horizontalSizeClass) private var hSizeClass
     @State private var showRestore = false
     @State private var showCsvImport = false
     @State private var showManualSession = false
@@ -61,7 +60,6 @@ struct StatsView: View {
                         .padding(.horizontal, 16)
                         .padding(.bottom, 24)
                 }
-                .readableContentWidth(hSizeClass == .regular ? 760 : .infinity)
             }
             .background(Theme.background)
         }
@@ -157,18 +155,14 @@ struct StatsView: View {
         let finishedCount = store.books.filter(\.finished).count
         let avgSession = store.sessions.isEmpty ? 0 : totalSecs / store.sessions.count
         let weekSecs = lastNDaysSeconds(7).reduce(0, +)
-        // Page totals + pace use `aggregatePages`: Readium position-deltas for
-        // EPUB sessions captured by the native reader, falling back to the
-        // legacy swipe-count for older sessions and CSV imports. This keeps the
-        // unit stable across iPhone/iPad and across font/spread changes.
-        let totalPages = store.sessions.reduce(0) { $0 + $1.aggregatePages }
-        let pageSessions = store.sessions.filter { $0.aggregatePages > 0 }
+        let totalPages = store.sessions.reduce(0) { $0 + ($1.pages ?? 0) }
+        let pageSessions = store.sessions.filter { ($0.pages ?? 0) > 0 }
         let avgPages = pageSessions.isEmpty ? 0 : totalPages / pageSessions.count
         let weekPages = lastNDaysPages(7).reduce(0, +)
         let paceTotalMins = max(1, pageSessions.reduce(0) { $0 + $1.secs }) / 60
-        let avgPace = pageSessions.isEmpty ? 0.0 : Double(pageSessions.reduce(0) { $0 + $1.aggregatePages }) / Double(paceTotalMins)
+        let avgPace = pageSessions.isEmpty ? 0.0 : Double(pageSessions.reduce(0) { $0 + ($1.pages ?? 0) }) / Double(paceTotalMins)
 
-        return LazyVGrid(columns: Layout.statsGridColumns(for: hSizeClass), spacing: 12) {
+        return LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
             statCard(label: "Total Read", value: Fmt.duration(totalSecs), sub: "all time", green: true)
             statCard(label: "Finished", value: "\(finishedCount)", sub: "books completed")
             statCard(label: "Avg Session", value: Fmt.duration(avgSession), sub: "per session")
@@ -311,7 +305,7 @@ struct StatsView: View {
         let cal = Calendar.current
         var map: [String: Int] = [:]
         for s in store.sessions {
-            map[Fmt.dayKey(s.start), default: 0] += s.aggregatePages
+            map[Fmt.dayKey(s.start), default: 0] += s.pages ?? 0
         }
         var out: [Int] = []
         for i in (0..<n).reversed() {
@@ -341,10 +335,10 @@ struct StatsView: View {
         let f = DateFormatter()
         f.dateFormat = "EEEEE"
         var byDay: [String: (pages: Int, secs: Int)] = [:]
-        for s in store.sessions where s.aggregatePages > 0 && s.secs > 0 {
+        for s in store.sessions where (s.pages ?? 0) > 0 && s.secs > 0 {
             let k = Fmt.dayKey(s.start)
             var v = byDay[k] ?? (0, 0)
-            v.pages += s.aggregatePages
+            v.pages += s.pages ?? 0
             v.secs += s.secs
             byDay[k] = v
         }

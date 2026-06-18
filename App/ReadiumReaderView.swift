@@ -17,6 +17,12 @@ struct ReadiumLocation {
     var chapterTitle: String?            // best-effort chapter title
 }
 
+struct ReadiumChapterPageState: Equatable {
+    var resourceIndex: Int
+    var currentPage: Int
+    var totalPages: Int
+}
+
 struct ReadiumChapterJump: Equatable {
     let id: UUID
     let chapterIndex: Int
@@ -35,6 +41,7 @@ struct ReadiumReaderContainer: View {
     let pendingChapterJump: ReadiumChapterJump?
     let highlights: [Highlight]
     let onLocationChange: (ReadiumLocation) -> Void
+    let onChapterPageChange: (ReadiumChapterPageState?) -> Void
     let onPageTurn: (Int) -> Void
     let onCenterTap: () -> Void
     let onHighlightSelection: (String, String) -> Void
@@ -59,6 +66,7 @@ struct ReadiumReaderContainer: View {
                     highlights: highlights,
                     positionsByResource: loader.positionsByResource,
                     onLocationChange: onLocationChange,
+                    onChapterPageChange: onChapterPageChange,
                     onHighlightSelection: onHighlightSelection,
                     onInitFailure: { msg in loader.error = msg; loader.publication = nil }
                 )
@@ -413,12 +421,14 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
     let highlights: [Highlight]
     let positionsByResource: [[Locator]]
     let onLocationChange: (ReadiumLocation) -> Void
+    let onChapterPageChange: (ReadiumChapterPageState?) -> Void
     let onHighlightSelection: (String, String) -> Void
     let onInitFailure: (String) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
             onLocationChange: onLocationChange,
+            onChapterPageChange: onChapterPageChange,
             onHighlightSelection: onHighlightSelection,
             positionsByResource: positionsByResource,
             publication: publication
@@ -478,6 +488,7 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
         context.coordinator.applyHighlights(highlights)
         if context.coordinator.lastPreferences != preferences {
             context.coordinator.lastPreferences = preferences
+            context.coordinator.resetViewportPageCache()
             navigator.submitPreferences(preferences)
         }
         if let pendingLocatorJSON,
@@ -555,16 +566,23 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
         var positionsByResource: [[Locator]]
         var publication: Publication
         private var appliedHighlightIDs: [String] = []
+        private var lastChapterPageState: ReadiumChapterPageState?
+        private var currentResourceIndex: Int?
+        private var pageSpanByResource: [Int: Double] = [:]
+        private var pageTotalByResource: [Int: Int] = [:]
         private let onLocationChange: (ReadiumLocation) -> Void
+        private let onChapterPageChange: (ReadiumChapterPageState?) -> Void
         private let onHighlightSelection: (String, String) -> Void
 
         init(
             onLocationChange: @escaping (ReadiumLocation) -> Void,
+            onChapterPageChange: @escaping (ReadiumChapterPageState?) -> Void,
             onHighlightSelection: @escaping (String, String) -> Void,
             positionsByResource: [[Locator]],
             publication: Publication
         ) {
             self.onLocationChange = onLocationChange
+            self.onChapterPageChange = onChapterPageChange
             self.onHighlightSelection = onHighlightSelection
             self.positionsByResource = positionsByResource
             self.publication = publication
@@ -579,6 +597,7 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
             let resourceIndex = publication.readingOrder.firstIndex { link in
                 link.url().isEquivalentTo(locator.href)
             }
+            currentResourceIndex = resourceIndex
 
             var chapterPos: Int?
             var chapterTotal: Int?
@@ -610,6 +629,28 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
                 chapterPositionTotal: chapterTotal,
                 chapterTitle: title
             ))
+
+            if let viewportNavigator = navigator as? any ViewportObservingNavigator {
+                publishChapterPageState(from: viewportNavigator.viewport)
+            }
+        }
+
+        func navigator(_ navigator: any ViewportObservingNavigator, viewportDidChange viewport: NavigatorViewport?) {
+            publishChapterPageState(from: viewport)
+        }
+
+        private func publishChapterPageState(from viewport: NavigatorViewport?) {
+            let state = chapterPageState(from: viewport)
+            guard state != lastChapterPageState else { return }
+            lastChapterPageState = state
+            onChapterPageChange(state)
+        }
+
+        func resetViewportPageCache() {
+            lastChapterPageState = nil
+            pageSpanByResource = [:]
+            pageTotalByResource = [:]
+            onChapterPageChange(nil)
         }
 
         func navigator(_ navigator: Navigator, presentError error: NavigatorError) {}
@@ -639,6 +680,65 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
                 )
             }
             navigator.apply(decorations: decorations, in: "bookMarkHighlights")
+        }
+
+        private func chapterPageState(from viewport: NavigatorViewport?) -> ReadiumChapterPageState? {
+            guard let viewport else {
+                return nil
+            }
+
+            let indexedResources = viewport.resources.compactMap { resource -> (index: Int, resource: NavigatorViewport.Resource)? in
+                guard let index = publication.readingOrder.firstIndex(where: { link in
+                    link.url().isEquivalentTo(resource.href)
+                }) else {
+                    return nil
+                }
+                return (index, resource)
+            }
+
+            guard let selected = indexedResources.first(where: { $0.index == currentResourceIndex }) ?? indexedResources.first else {
+                return nil
+            }
+
+            let resourceIndex = selected.index
+            let range = selected.resource.progression
+            let lower = max(0, min(1, range.lowerBound))
+            let upper = max(lower, min(1, range.upperBound))
+            let span = upper - lower
+            guard span.isFinite, span > 0 else { return nil }
+
+            if span >= 0.999 {
+                pageSpanByResource[resourceIndex] = 1
+                pageTotalByResource[resourceIndex] = 1
+                return ReadiumChapterPageState(
+                    resourceIndex: resourceIndex,
+                    currentPage: 1,
+                    totalPages: 1
+                )
+            }
+
+            if pageSpanByResource[resourceIndex] == nil || lower < 0.01 {
+                pageSpanByResource[resourceIndex] = span
+                pageTotalByResource[resourceIndex] = max(1, Int(ceil((1.0 - 0.0001) / span)))
+            }
+
+            guard let pageSpan = pageSpanByResource[resourceIndex],
+                  let totalPages = pageTotalByResource[resourceIndex] else {
+                return nil
+            }
+
+            let currentPage: Int
+            if upper >= 0.999 {
+                currentPage = totalPages
+            } else {
+                currentPage = max(1, min(totalPages, Int(round(lower / pageSpan)) + 1))
+            }
+
+            return ReadiumChapterPageState(
+                resourceIndex: resourceIndex,
+                currentPage: currentPage,
+                totalPages: totalPages
+            )
         }
     }
 }

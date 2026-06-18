@@ -2,7 +2,6 @@ import SwiftUI
 
 struct JournalView: View {
     @EnvironmentObject private var store: Store
-    @Environment(\.horizontalSizeClass) private var hSizeClass
     @State private var showGoalEditor = false
     @State private var calMonth = Date()
     @State private var daySheetKey: String?
@@ -66,7 +65,6 @@ struct JournalView: View {
                     .padding(.horizontal, 16)
                     .padding(.bottom, 24)
                 }
-                .readableContentWidth(hSizeClass == .regular ? 720 : .infinity)
             }
             .background(Theme.background)
         }
