@@ -15,15 +15,6 @@ struct ReadiumLocation {
     var chapterPosition: Int?            // 1-based position within the current resource
     var chapterPositionTotal: Int?       // total positions within the current resource
     var chapterTitle: String?            // best-effort chapter title
-    var publisherPage: Int?
-    var publisherPageLabel: String?
-    var publisherPageTotal: Int?
-}
-
-struct ReadiumPublisherPage: Equatable {
-    var totalProgress: Double
-    var label: String
-    var number: Int?
 }
 
 struct ReadiumChapterPageState: Equatable {
@@ -74,7 +65,6 @@ struct ReadiumReaderContainer: View {
                     pendingChapterJump: pendingChapterJump,
                     highlights: highlights,
                     positionsByResource: loader.positionsByResource,
-                    publisherPages: loader.publisherPages,
                     onLocationChange: onLocationChange,
                     onChapterPageChange: onChapterPageChange,
                     onHighlightSelection: onHighlightSelection,
@@ -380,7 +370,6 @@ final class ReadiumReaderLoader: ObservableObject {
     @Published var publication: Publication?
     @Published var initialLocation: Locator?
     @Published var positionsByResource: [[Locator]] = []
-    @Published var publisherPages: [ReadiumPublisherPage] = []
     @Published var error: String?
 
     var totalPositions: Int? {
@@ -401,7 +390,6 @@ final class ReadiumReaderLoader: ObservableObject {
         publication = nil
         initialLocation = nil
         positionsByResource = []
-        publisherPages = []
         error = nil
 
         guard let fileURL = FileURL(url: epubURL) else {
@@ -415,41 +403,10 @@ final class ReadiumReaderLoader: ObservableObject {
             let boundedProgress = max(0, min(1, initialProgress))
             let positions = await openedPublication.positionsByReadingOrder().getOrNil() ?? []
             positionsByResource = positions
-            publisherPages = await resolvePublisherPages(in: openedPublication)
             initialLocation = await openedPublication.locate(progression: boundedProgress)
             publication = openedPublication
         } catch {
             self.error = error.localizedDescription
-        }
-    }
-
-    private func resolvePublisherPages(in publication: Publication) async -> [ReadiumPublisherPage] {
-        var raw: [(totalProgress: Double, label: String)] = []
-        for link in publication.pageList {
-            guard let locator = await publication.locate(link),
-                  let totalProgress = locator.locations.totalProgression ?? locator.locations.progression else {
-                continue
-            }
-            let label = (link.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            let pageLabel = label.isEmpty ? "\(raw.count + 1)" : label
-            raw.append((max(0, min(1, totalProgress)), pageLabel))
-        }
-        // Some EPUBs expose only a "Cover Page" entry (or a couple of nav markers);
-        // treat anything below this threshold as no publisher pagination so we fall
-        // back to position-based display instead of rendering "Page Cover Page of 1".
-        guard raw.count >= 5 else { return [] }
-        let sorted = raw.enumerated().sorted { lhs, rhs in
-            if lhs.element.totalProgress == rhs.element.totalProgress {
-                return lhs.offset < rhs.offset
-            }
-            return lhs.element.totalProgress < rhs.element.totalProgress
-        }
-        return sorted.enumerated().map { newIndex, item in
-            ReadiumPublisherPage(
-                totalProgress: item.element.totalProgress,
-                label: item.element.label,
-                number: newIndex + 1
-            )
         }
     }
 }
@@ -463,12 +420,10 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
     let pendingChapterJump: ReadiumChapterJump?
     let highlights: [Highlight]
     let positionsByResource: [[Locator]]
-    let publisherPages: [ReadiumPublisherPage]
     let onLocationChange: (ReadiumLocation) -> Void
     let onChapterPageChange: (ReadiumChapterPageState?) -> Void
     let onHighlightSelection: (String, String) -> Void
     let onInitFailure: (String) -> Void
-    @Environment(\.horizontalSizeClass) private var hSizeClass
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -476,7 +431,6 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
             onChapterPageChange: onChapterPageChange,
             onHighlightSelection: onHighlightSelection,
             positionsByResource: positionsByResource,
-            publisherPages: publisherPages,
             publication: publication
         )
     }
@@ -527,7 +481,6 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
         let navigator = host.navigator
         let preferences = readiumPreferences(for: settings)
         context.coordinator.positionsByResource = positionsByResource
-        context.coordinator.publisherPages = publisherPages
         context.coordinator.publication = publication
         bridge.navigator = navigator
         bridge.animator = host.pageTurnAnimator
@@ -563,15 +516,10 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
             backgroundColor: ReadiumNavigator.Color(hex: ReaderThemePalette.resolve(settings.theme).bgHex),
             columnCount: .one,
             fontFamily: readiumFont(for: settings.font),
-            // The displayed "Font Size" slider treats 100% as the comfortable
-            // baseline, but Readium's underlying scale starts smaller than the
-            // tuned reading experience. Multiply by 1.2 so the slider's 100%
-            // matches what used to render as 120% — keeping the displayed
-            // percentage stable while shifting the visible baseline up.
-            fontSize: Double(settings.fontSize) / 100.0 * 1.2,
+            fontSize: Double(settings.fontSize) / 100.0,
             fontWeight: settings.bold ? 1.2 : nil,
             lineHeight: settings.lineHeight,
-            pageMargins: readiumMargins(for: settings.margins, sizeClass: hSizeClass),
+            pageMargins: readiumMargins(for: settings.margins),
             publisherStyles: true,
             scroll: false,
             textAlign: settings.justify ? .justify : .start,
@@ -601,19 +549,12 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
         }
     }
 
-    private func readiumMargins(for margin: LayoutMargin, sizeClass: UserInterfaceSizeClass?) -> Double {
-        let base: Double
+    private func readiumMargins(for margin: LayoutMargin) -> Double {
         switch margin {
-        case .narrow: base = 0.7
-        case .normal: base = 1.0
-        case .wide:   base = 1.35
+        case .narrow: return 0.7
+        case .normal: return 1.0
+        case .wide: return 1.35
         }
-        // On iPad (regular width), the EPUB margin multiplier produces a
-        // text column that leaves a lot of empty horizontal space. Scale
-        // the value down aggressively so the text column actually uses the
-        // canvas. iPhone (compact) keeps its original behavior so nothing
-        // changes for the existing reading experience.
-        return sizeClass == .regular ? base * 0.20 : base
     }
 
     @MainActor
@@ -623,7 +564,6 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
         var lastJumpLocatorJSON: String?
         var lastChapterJumpID: UUID?
         var positionsByResource: [[Locator]]
-        var publisherPages: [ReadiumPublisherPage]
         var publication: Publication
         private var appliedHighlightIDs: [String] = []
         private var lastChapterPageState: ReadiumChapterPageState?
@@ -639,14 +579,12 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
             onChapterPageChange: @escaping (ReadiumChapterPageState?) -> Void,
             onHighlightSelection: @escaping (String, String) -> Void,
             positionsByResource: [[Locator]],
-            publisherPages: [ReadiumPublisherPage],
             publication: Publication
         ) {
             self.onLocationChange = onLocationChange
             self.onChapterPageChange = onChapterPageChange
             self.onHighlightSelection = onHighlightSelection
             self.positionsByResource = positionsByResource
-            self.publisherPages = publisherPages
             self.publication = publication
         }
 
@@ -680,7 +618,6 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
                 return locator.title
             }()
 
-            let publisherPage = publisherPage(for: progress)
             onLocationChange(ReadiumLocation(
                 totalProgress: progress,
                 locatorJSON: json,
@@ -690,10 +627,7 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
                 resourceTotal: publication.readingOrder.count,
                 chapterPosition: chapterPos,
                 chapterPositionTotal: chapterTotal,
-                chapterTitle: title,
-                publisherPage: publisherPage?.number,
-                publisherPageLabel: publisherPage?.label,
-                publisherPageTotal: publisherPages.isEmpty ? nil : publisherPages.count
+                chapterTitle: title
             ))
 
             if let viewportNavigator = navigator as? any ViewportObservingNavigator {
@@ -746,21 +680,6 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
                 )
             }
             navigator.apply(decorations: decorations, in: "bookMarkHighlights")
-        }
-
-        private func publisherPage(for progress: Double) -> ReadiumPublisherPage? {
-            guard !publisherPages.isEmpty else { return nil }
-            var low = 0
-            var high = publisherPages.count
-            while low < high {
-                let mid = (low + high) / 2
-                if publisherPages[mid].totalProgress <= progress {
-                    low = mid + 1
-                } else {
-                    high = mid
-                }
-            }
-            return publisherPages[max(0, low - 1)]
         }
 
         private func chapterPageState(from viewport: NavigatorViewport?) -> ReadiumChapterPageState? {

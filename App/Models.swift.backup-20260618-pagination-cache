@@ -51,7 +51,6 @@ struct ReadingSession: Identifiable, Codable, Hashable {
     var end: Date?
     var secs: Int
     var pages: Int?
-    var publisherPages: Int?
     var progressDelta: Double?
     var manual: Bool
 
@@ -63,7 +62,6 @@ struct ReadingSession: Identifiable, Codable, Hashable {
         end: Date? = nil,
         secs: Int,
         pages: Int? = nil,
-        publisherPages: Int? = nil,
         progressDelta: Double? = nil,
         manual: Bool = false
     ) {
@@ -74,7 +72,6 @@ struct ReadingSession: Identifiable, Codable, Hashable {
         self.end = end
         self.secs = secs
         self.pages = pages
-        self.publisherPages = publisherPages
         self.progressDelta = progressDelta
         self.manual = manual
     }

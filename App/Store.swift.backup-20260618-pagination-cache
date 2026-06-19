@@ -830,13 +830,13 @@ final class Store: ObservableObject {
     }
 
     func makeSessionsCSV() -> String {
-        var rows: [String] = ["start,end,book,seconds,minutes,pages,publisherPages,manual"]
+        var rows: [String] = ["start,end,book,seconds,minutes,pages,manual"]
         let isoFormatter = ISO8601DateFormatter()
         for s in sessions.sorted(by: { $0.start < $1.start }) {
             let start = isoFormatter.string(from: s.start)
             let end = s.end.map { isoFormatter.string(from: $0) } ?? ""
             let title = "\"\(s.bookTitle.replacingOccurrences(of: "\"", with: "\"\""))\""
-            rows.append("\(start),\(end),\(title),\(s.secs),\(s.secs / 60),\(s.pages.map(String.init) ?? ""),\(s.publisherPages.map(String.init) ?? ""),\(s.manual ? "1" : "0")")
+            rows.append("\(start),\(end),\(title),\(s.secs),\(s.secs / 60),\(s.pages.map(String.init) ?? ""),\(s.manual ? "1" : "0")")
         }
         return rows.joined(separator: "\n")
     }

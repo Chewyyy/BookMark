@@ -24,7 +24,6 @@ struct ReaderView: View {
     @State private var sessionStartedAt = Date()
     @State private var sessionStartProgress: Double?
     @State private var sessionStartPage: Int?
-    @State private var sessionStartPublisherPage: Int?
     @State private var sessionSaved = false
     @State private var elapsed = 0
     @State private var timer: Timer?
@@ -110,7 +109,6 @@ struct ReaderView: View {
             sessionStartedAt = Date()
             sessionStartProgress = nil
             sessionStartPage = nil
-            sessionStartPublisherPage = nil
             sessionSaved = false
             elapsed = 0
             startTimer()
@@ -510,19 +508,9 @@ struct ReaderView: View {
         sessionSaved = true
         let progressDelta = max(0, model.overallProgress - (sessionStartProgress ?? model.overallProgress))
         let pagesRead: Int = {
-            if model.epubURL != nil {
-                return model.readiumSessionPagesRead
-            }
             guard let startPage = sessionStartPage else { return 0 }
-            return max(0, model.estimatedBookPage - startPage)
-        }()
-        let publisherPagesRead: Int? = {
-            guard model.epubURL != nil,
-                  let startPage = sessionStartPublisherPage,
-                  let endPage = model.readiumPublisherPage
-            else { return nil }
-            let delta = endPage - startPage
-            return delta > 0 ? delta : nil
+            let endPage = model.epubURL != nil ? model.displayPage : model.estimatedBookPage
+            return max(0, endPage - startPage)
         }()
         let session = ReadingSession(
             bookId: book.id,
@@ -531,7 +519,6 @@ struct ReaderView: View {
             end: Date(),
             secs: elapsed,
             pages: pagesRead > 0 ? pagesRead : nil,
-            publisherPages: publisherPagesRead,
             progressDelta: progressDelta > 0 ? progressDelta : nil,
             manual: false
         )
@@ -545,9 +532,6 @@ struct ReaderView: View {
         }
         if sessionStartPage == nil {
             sessionStartPage = model.epubURL != nil ? model.displayPage : model.estimatedBookPage
-        }
-        if sessionStartPublisherPage == nil {
-            sessionStartPublisherPage = model.readiumPublisherPage
         }
     }
 
@@ -579,7 +563,6 @@ struct ReaderView: View {
         model.resetReadiumSessionMetrics()
         sessionStartProgress = model.readiumProgress
         sessionStartPage = nil
-        sessionStartPublisherPage = nil
         model.epubURL = url
         store.beginLiveReadingSession(
             bookId: book.id,
@@ -657,9 +640,6 @@ final class ReaderModel: ObservableObject {
     @Published var readiumChapterPositionTotal: Int?
     @Published var readiumChapterPageState: ReadiumChapterPageState?
     @Published var readiumChapterTitle: String?
-    @Published var readiumPublisherPage: Int?
-    @Published var readiumPublisherPageLabel: String?
-    @Published var readiumPublisherPageTotal: Int?
     @Published private var readiumDisplayIsReady = false
     @Published private(set) var readiumSessionPagesRead = 0
     @Published private var displayPageOverride: Int?
@@ -709,9 +689,6 @@ final class ReaderModel: ObservableObject {
         if epubURL != nil {
             guard readiumDisplayIsReady else { return "Calculating..." }
             let percent = Int((overallProgress * 100).rounded())
-            if let label = readiumPublisherPageLabel, let total = readiumPublisherPageTotal, total > 0 {
-                return "Page \(label) of \(total) · \(percent)%"
-            }
             return "Page \(displayPage) of \(displayPageTotal) · \(percent)%"
         }
         return "Page \(estimatedBookPage) of \(estimatedBookPages) · \(Int((overallProgress * 100).rounded()))%"
@@ -720,9 +697,6 @@ final class ReaderModel: ObservableObject {
     var pageOnlyText: String {
         if epubURL != nil {
             guard readiumDisplayIsReady else { return "Calculating..." }
-            if let label = readiumPublisherPageLabel {
-                return "Page \(label)"
-            }
             return "Page \(displayPage)"
         }
         return "Page \(estimatedBookPage)"
@@ -796,9 +770,6 @@ final class ReaderModel: ObservableObject {
         readiumChapterPositionTotal = nil
         readiumChapterPageState = nil
         readiumChapterTitle = nil
-        readiumPublisherPage = nil
-        readiumPublisherPageLabel = nil
-        readiumPublisherPageTotal = nil
     }
 
     func updateReadiumChapterPageState(_ state: ReadiumChapterPageState?) {
@@ -824,9 +795,6 @@ final class ReaderModel: ObservableObject {
         readiumChapterPosition = location.chapterPosition
         readiumChapterPositionTotal = location.chapterPositionTotal
         readiumChapterTitle = location.chapterTitle
-        readiumPublisherPage = location.publisherPage
-        readiumPublisherPageLabel = location.publisherPageLabel
-        readiumPublisherPageTotal = location.publisherPageTotal
         if let idx = location.resourceIndex {
             chapterIndex = idx
             if readiumChapterPageState?.resourceIndex != idx {

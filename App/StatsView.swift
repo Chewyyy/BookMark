@@ -1,8 +1,15 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+private struct PublisherStat {
+    var label: String
+    var value: String
+    var sub: String
+}
+
 struct StatsView: View {
     @EnvironmentObject private var store: Store
+    @Environment(\.horizontalSizeClass) private var hSizeClass
     @State private var showRestore = false
     @State private var showCsvImport = false
     @State private var showManualSession = false
@@ -13,6 +20,7 @@ struct StatsView: View {
     @State private var toastMessage: String?
     @State private var lastBackupStatus: String? = AutoBackup.lastBackupStatus()
     @State private var backupRefreshTick = 0
+    @State private var publisherStatFlips: Set<String> = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -60,6 +68,7 @@ struct StatsView: View {
                         .padding(.horizontal, 16)
                         .padding(.bottom, 24)
                 }
+                .readableContentWidth(hSizeClass == .regular ? 760 : .infinity)
             }
             .background(Theme.background)
         }
@@ -161,25 +170,96 @@ struct StatsView: View {
         let weekPages = lastNDaysPages(7).reduce(0, +)
         let paceTotalMins = max(1, pageSessions.reduce(0) { $0 + $1.secs }) / 60
         let avgPace = pageSessions.isEmpty ? 0.0 : Double(pageSessions.reduce(0) { $0 + ($1.pages ?? 0) }) / Double(paceTotalMins)
+        let totalPublisherPages = store.sessions.reduce(0) { $0 + ($1.publisherPages ?? 0) }
+        let publisherPageSessions = store.sessions.filter { ($0.publisherPages ?? 0) > 0 }
+        let avgPublisherPages = publisherPageSessions.isEmpty ? 0 : totalPublisherPages / publisherPageSessions.count
+        let weekPublisherPages = lastNDaysPublisherPages(7).reduce(0, +)
+        let publisherPaceTotalMins = max(1, publisherPageSessions.reduce(0) { $0 + $1.secs }) / 60
+        let avgPublisherPace = publisherPageSessions.isEmpty ? 0.0 : Double(totalPublisherPages) / Double(publisherPaceTotalMins)
 
-        return LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
+        return LazyVGrid(columns: Layout.statsGridColumns(for: hSizeClass), spacing: 12) {
             statCard(label: "Total Read", value: Fmt.duration(totalSecs), sub: "all time", green: true)
             statCard(label: "Finished", value: "\(finishedCount)", sub: "books completed")
             statCard(label: "Avg Session", value: Fmt.duration(avgSession), sub: "per session")
             statCard(label: "This Week", value: Fmt.duration(weekSecs), sub: "last 7 days")
-            statCard(label: "Total Pages", value: "\(totalPages)", sub: "all time")
-            statCard(label: "Avg Pages", value: "\(avgPages)", sub: "per session")
-            statCard(label: "Pages This Week", value: "\(weekPages)", sub: "last 7 days")
-            statCard(label: "Avg Pace", value: String(format: "%.2f", avgPace), sub: "pages/min")
+            statCard(
+                id: "total-pages",
+                label: "Total Pages",
+                value: "\(totalPages)",
+                sub: "all time",
+                publisher: PublisherStat(label: "Total Pages", value: "\(totalPublisherPages)", sub: "publisher")
+            )
+            statCard(
+                id: "avg-pages",
+                label: "Avg Pages",
+                value: "\(avgPages)",
+                sub: "per session",
+                publisher: PublisherStat(label: "Avg Pages", value: "\(avgPublisherPages)", sub: "publisher/session")
+            )
+            statCard(
+                id: "week-pages",
+                label: "Pages This Week",
+                value: "\(weekPages)",
+                sub: "last 7 days",
+                publisher: PublisherStat(label: "Pages This Week", value: "\(weekPublisherPages)", sub: "publisher")
+            )
+            statCard(
+                id: "avg-pace",
+                label: "Avg Pace",
+                value: String(format: "%.2f", avgPace),
+                sub: "pages/min",
+                publisher: PublisherStat(label: "Avg Pace", value: String(format: "%.2f", avgPublisherPace), sub: "publisher/min")
+            )
         }
     }
 
-    private func statCard(label: String, value: String, sub: String, green: Bool = false) -> some View {
+    private func statCard(
+        id: String? = nil,
+        label: String,
+        value: String,
+        sub: String,
+        green: Bool = false,
+        publisher: PublisherStat? = nil
+    ) -> some View {
+        let isPublisher = id.map { publisherStatFlips.contains($0) } ?? false
+        let activeLabel = isPublisher ? (publisher?.label ?? label) : label
+        let activeValue = isPublisher ? (publisher?.value ?? value) : value
+        let activeSub = isPublisher ? (publisher?.sub ?? sub) : sub
+
+        return statCardFace(
+            label: activeLabel,
+            value: activeValue,
+            sub: activeSub,
+            green: green,
+            isPublisher: isPublisher
+        )
+        .rotation3DEffect(.degrees(isPublisher ? 180 : 0), axis: (x: 0, y: 1, z: 0))
+        .animation(.spring(response: 0.36, dampingFraction: 0.82), value: isPublisher)
+        .contentShape(RoundedRectangle(cornerRadius: Theme.cornerLarge))
+        .onTapGesture {
+            guard let id, publisher != nil else { return }
+            if publisherStatFlips.contains(id) {
+                publisherStatFlips.remove(id)
+            } else {
+                publisherStatFlips.insert(id)
+            }
+        }
+    }
+
+    private func statCardFace(label: String, value: String, sub: String, green: Bool, isPublisher: Bool) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(label.uppercased())
-                .font(.system(size: 10, weight: .bold))
-                .tracking(0.7)
-                .foregroundStyle(green ? Color.white.opacity(0.7) : Theme.subtle)
+            HStack(alignment: .top, spacing: 2) {
+                Text(label.uppercased())
+                    .font(.system(size: 10, weight: .bold))
+                    .tracking(0.7)
+                    .foregroundStyle(green ? Color.white.opacity(0.7) : Theme.subtle)
+                if isPublisher {
+                    Text("P")
+                        .font(.system(size: 8, weight: .heavy))
+                        .baselineOffset(4)
+                        .foregroundStyle(Theme.accent)
+                }
+            }
             Text(value)
                 .font(.system(size: 28, weight: .heavy))
                 .tracking(-1)
@@ -195,6 +275,7 @@ struct StatsView: View {
         .background(green ? Theme.accent : Theme.card)
         .clipShape(RoundedRectangle(cornerRadius: Theme.cornerLarge))
         .shadow(color: .black.opacity(0.07), radius: 12, y: 2)
+        .scaleEffect(x: isPublisher ? -1 : 1, y: 1)
     }
 
     private func chartCard<C: View>(title: String, @ViewBuilder content: () -> C) -> some View {
@@ -306,6 +387,21 @@ struct StatsView: View {
         var map: [String: Int] = [:]
         for s in store.sessions {
             map[Fmt.dayKey(s.start), default: 0] += s.pages ?? 0
+        }
+        var out: [Int] = []
+        for i in (0..<n).reversed() {
+            if let d = cal.date(byAdding: .day, value: -i, to: Date()) {
+                out.append(map[Fmt.dayKey(d)] ?? 0)
+            }
+        }
+        return out
+    }
+
+    private func lastNDaysPublisherPages(_ n: Int) -> [Int] {
+        let cal = Calendar.current
+        var map: [String: Int] = [:]
+        for s in store.sessions {
+            map[Fmt.dayKey(s.start), default: 0] += s.publisherPages ?? 0
         }
         var out: [Int] = []
         for i in (0..<n).reversed() {
@@ -550,6 +646,7 @@ struct PaceChart: View {
 struct YearBooksCard: View {
     let books: [Book]
     let year: Int
+    @Environment(\.horizontalSizeClass) private var hSizeClass
 
     /// Mirrors the webapp's `YEARLY_BOOK_GOAL` constant.
     static let yearlyGoal = 10
@@ -565,6 +662,20 @@ struct YearBooksCard: View {
         let toGo = Self.yearlyGoal - books.count
         return "\(books.count) finished. \(toGo) to go."
     }
+
+    // Layout proportions are size-class aware: iPhone gets the original
+    // 4-column / 54pt thumbnails; iPad uses 6 wider columns so the section
+    // breathes into the wider canvas instead of looking like tiny postage
+    // stamps in the middle of all that white space.
+    private var coverWidth: CGFloat { hSizeClass == .regular ? 96 : 54 }
+    private var coverHeight: CGFloat { coverWidth * 1.5 }
+    private var columnCount: Int { hSizeClass == .regular ? 6 : 4}
+    private var badgeSize: CGFloat { hSizeClass == .regular ? 32 : 22 }
+    private var badgeIconSize: CGFloat { hSizeClass == .regular ? 15 : 11 }
+    private var coverCornerRadius: CGFloat { hSizeClass == .regular ? 6 : 4 }
+    private var overflowFontSize: CGFloat { hSizeClass == .regular ? 18 : 13 }
+    /// Show one row's worth of thumbnails minus one slot for the "+N" overflow.
+    private var maxThumbnails: Int { columnCount * (hSizeClass == .regular ? 3 : 3) - 1 }
 
     var body: some View {
         VStack(spacing: 14) {
@@ -584,30 +695,30 @@ struct YearBooksCard: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 20)
             } else {
-                LazyVGrid(columns: Array(repeating: GridItem(.fixed(54), spacing: 8), count: 4), spacing: 10) {
-                    ForEach(books.prefix(11)) { bk in
+                LazyVGrid(columns: Array(repeating: GridItem(.fixed(coverWidth), spacing: 8), count: columnCount), spacing: 10) {
+                    ForEach(books.prefix(maxThumbnails)) { bk in
                         ZStack(alignment: .bottomTrailing) {
                             BookCover(book: bk)
-                                .frame(width: 54, height: 81)
-                                .clipShape(RoundedRectangle(cornerRadius: 4))
+                                .frame(width: coverWidth, height: coverHeight)
+                                .clipShape(RoundedRectangle(cornerRadius: coverCornerRadius))
                                 .shadow(color: .black.opacity(0.22), radius: 8, y: 2)
                             Circle().fill(Theme.imsg)
-                                .frame(width: 22, height: 22)
+                                .frame(width: badgeSize, height: badgeSize)
                                 .overlay(
                                     Image(systemName: "checkmark")
-                                        .font(.system(size: 11, weight: .heavy))
+                                        .font(.system(size: badgeIconSize, weight: .heavy))
                                         .foregroundStyle(.white)
                                 )
-                                .offset(x: 6, y: 6)
+                                .offset(x: badgeSize * 0.27, y: badgeSize * 0.27)
                         }
                     }
-                    if books.count > 11 {
+                    if books.count > maxThumbnails {
                         ZStack {
-                            RoundedRectangle(cornerRadius: 4)
+                            RoundedRectangle(cornerRadius: coverCornerRadius)
                                 .fill(Color.black.opacity(0.38))
-                                .frame(width: 54, height: 81)
-                            Text("+\(books.count - 11)")
-                                .font(.system(size: 13, weight: .heavy))
+                                .frame(width: coverWidth, height: coverHeight)
+                            Text("+\(books.count - maxThumbnails)")
+                                .font(.system(size: overflowFontSize, weight: .heavy))
                                 .foregroundStyle(.white)
                         }
                     }

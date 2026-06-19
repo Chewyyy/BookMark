@@ -58,6 +58,32 @@ extension View {
             .clipShape(RoundedRectangle(cornerRadius: Theme.cornerSmall, style: .continuous))
             .shadow(color: shadow.color, radius: shadow.radius, x: 0, y: shadow.y)
     }
+    /// Centers content and caps its width so layouts stay readable on iPad's
+    /// regular-width canvas instead of stretching edge-to-edge. No effect on
+    /// iPhone (compact width); the caller still controls horizontal padding.
+    func readableContentWidth(_ maxWidth: CGFloat = 720) -> some View {
+        frame(maxWidth: maxWidth)
+            .frame(maxWidth: .infinity)
+    }
+}
+
+/// Layout breakpoints used to switch between phone and iPad-style layouts.
+/// Driven by `horizontalSizeClass`, not raw screen width, so the right layout
+/// also kicks in for Slide Over / Split View windows on iPad.
+enum Layout {
+    /// Library grid columns by horizontal size class. Phones (compact) get 2;
+    /// iPad regular width gets 4.
+    static func libraryGridColumns(for sizeClass: UserInterfaceSizeClass?) -> [GridItem] {
+        let count = sizeClass == .regular ? 4 : 2
+        return Array(repeating: GridItem(.flexible(), spacing: 14), count: count)
+    }
+
+    /// Stats grid columns. Phones get 2 cards/row; iPad regular gets 4 so the
+    /// 8-card grid lands as 2 rows of 4 instead of one tall column.
+    static func statsGridColumns(for sizeClass: UserInterfaceSizeClass?) -> [GridItem] {
+        let count = sizeClass == .regular ? 4 : 2
+        return Array(repeating: GridItem(.flexible(), spacing: 12), count: count)
+    }
 }
 
 enum CoverGradient {

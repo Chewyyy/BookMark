@@ -122,6 +122,7 @@ enum BackupMigration {
                 end: parseDate(dict["end"]),
                 secs: secs,
                 pages: dict["pages"] as? Int,
+                publisherPages: dict["publisherPages"] as? Int,
                 progressDelta: (dict["progressDelta"] as? Double) ?? (dict["dPct"] as? Double),
                 manual: (dict["manual"] as? Bool) ?? false
             )
