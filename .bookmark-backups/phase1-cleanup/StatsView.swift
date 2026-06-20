@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 import UniformTypeIdentifiers
 
 private struct PublisherStat {
@@ -14,10 +13,7 @@ struct StatsView: View {
     @State private var showRestore = false
     @State private var showCsvImport = false
     @State private var showManualSession = false
-    @State private var showWordsPerPageSettings = false
     @State private var showBackupFolderPicker = false
-    @State private var showFolderPicker = false
-    @State private var folderPickerPurpose: StatsFolderPickerPurpose = .rescan
     @State private var sessionsVisible = 10
     @State private var editingSession: ReadingSession?
     @State private var pendingDelete: ReadingSession?
@@ -25,7 +21,6 @@ struct StatsView: View {
     @State private var lastBackupStatus: String? = AutoBackup.lastBackupStatus()
     @State private var backupRefreshTick = 0
     @State private var publisherStatFlips: Set<String> = []
-    @State private var showStatsTools = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -110,36 +105,6 @@ struct StatsView: View {
         )
         .background(
             Color.clear
-                .sheet(isPresented: $showStatsTools) {
-                    statsToolsSheet
-                        .presentationDetents([.height(store.watchedFolderName == nil ? 560 : 615)])
-                        .presentationBackground(Theme.background)
-                }
-        )
-        .background(
-            Color.clear
-                .sheet(isPresented: $showWordsPerPageSettings) {
-                    WordsPerPageSettingsSheet()
-                        .presentationDetents([.height(385)])
-                        .presentationBackground(Theme.background)
-                }
-        )
-        .background(
-            Color.clear
-                .sheet(isPresented: $showFolderPicker) {
-                    FolderPicker { url in
-                        showFolderPicker = false
-                        switch folderPickerPurpose {
-                        case .rescan:
-                            handleFolderRescan(url)
-                        case .watch:
-                            handleWatchedFolderSelection(url)
-                        }
-                    }
-                }
-        )
-        .background(
-            Color.clear
                 .sheet(item: $editingSession) { s in
                     SessionEditorSheet(session: s)
                         .presentationDetents([.large])
@@ -186,107 +151,12 @@ struct StatsView: View {
                 .font(.system(size: 23, weight: .heavy))
                 .tracking(-0.5)
             Spacer()
-            statsMenu
         }
         .padding(.horizontal, 20)
         .padding(.top, 6)
         .padding(.bottom, 14)
         .background(Theme.background)
         .overlay(Divider().opacity(0.4), alignment: .bottom)
-    }
-
-    private var statsMenu: some View {
-        Button {
-            dismissKeyboard()
-            showStatsTools = true
-        } label: {
-            Image(systemName: "ellipsis.circle")
-                .font(.system(size: 22, weight: .heavy))
-                .foregroundStyle(Theme.accent)
-                .frame(width: 36, height: 36)
-        }
-        .accessibilityLabel("Stats Tools")
-    }
-
-    private var statsToolsSheet: some View {
-        VStack(spacing: 0) {
-            Grabber()
-            Text("Stats Tools")
-                .font(.system(size: 20, weight: .heavy))
-                .padding(.bottom, 18)
-
-            ScrollView {
-                VStack(spacing: 0) {
-                    statsToolRow("Words Per Page", systemImage: "textformat.size") {
-                        showWordsPerPageSettings = true
-                    }
-                    statsToolRow("Rescan Folder", systemImage: "folder.badge.plus") {
-                        folderPickerPurpose = .rescan
-                        showFolderPicker = true
-                    }
-                    statsToolRow(store.watchedFolderName.map { "Watching: \($0)" } ?? "Watch Import Folder", systemImage: "folder.badge.gearshape") {
-                        folderPickerPurpose = .watch
-                        showFolderPicker = true
-                    }
-                    if store.watchedFolderName != nil {
-                        statsToolRow("Stop Watching Folder", systemImage: "xmark.circle", role: .destructive) {
-                            store.clearWatchedFolder()
-                            showToast("Stopped watching folder")
-                        }
-                    }
-                    statsToolDivider
-                    statsToolRow("Export Backup", systemImage: "arrow.down.doc", action: exportBackup)
-                    statsToolRow("Save to This iPhone", systemImage: "iphone.gen2", action: saveToThisIPhone)
-                    statsToolRow("Export CSV", systemImage: "tablecells", action: exportCsv)
-                    statsToolRow("Restore Backup", systemImage: "arrow.up.doc") { showRestore = true }
-                    statsToolRow("Import CSV", systemImage: "square.and.arrow.down") { showCsvImport = true }
-                    statsToolRow("Add Manual Session", systemImage: "plus.rectangle.on.folder") { showManualSession = true }
-                }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 18)
-            }
-        }
-    }
-
-    private var statsToolDivider: some View {
-        Divider()
-            .opacity(0.5)
-            .padding(.vertical, 8)
-    }
-
-    private func statsToolRow(_ title: String, systemImage: String, role: ButtonRole? = nil, action: @escaping () -> Void) -> some View {
-        Button(role: role) {
-            runStatsToolAction(action)
-        } label: {
-            HStack(spacing: 14) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(role == .destructive ? Color.red : Theme.accent)
-                    .frame(width: 26, height: 26)
-                Text(title)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(role == .destructive ? Color.red : Theme.text)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
-                Spacer()
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 13)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func runStatsToolAction(_ action: @escaping () -> Void) {
-        dismissKeyboard()
-        showStatsTools = false
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            action()
-        }
-    }
-
-    private func dismissKeyboard() {
-        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
 
     private var statsGrid: some View {
@@ -301,24 +171,22 @@ struct StatsView: View {
         let weekPages = lastNDaysPages(7).reduce(0, +)
         let paceTotalMins = max(1, pageSessions.reduce(0) { $0 + $1.secs }) / 60
         let avgPace = pageSessions.isEmpty ? 0.0 : Double(pageSessions.reduce(0) { $0 + ($1.pages ?? 0) }) / Double(paceTotalMins)
-        // Word-based stats use actual EPUB word counts where available,
-        // then each session's hidden words-per-page snapshot, then the current fallback.
-        let wordsPerPage = store.resolvedWordsPerPageForCurrentDevice()
-        let estimatedWordSessions = store.sessions.filter { estimatedWords(for: $0, wordsPerPage: wordsPerPage) > 0 }
-        let totalWords = estimatedWordSessions.reduce(0) { $0 + estimatedWords(for: $1, wordsPerPage: wordsPerPage) }
-        let avgWords = estimatedWordSessions.isEmpty ? 0 : totalWords / estimatedWordSessions.count
-        let weekWords = lastNDaysEstimatedWords(7, wordsPerPage: wordsPerPage).reduce(0, +)
-        let totalStdPages = EPUBWordCounter.standardizedPages(forWords: totalWords, wordsPerPage: wordsPerPage)
-        let avgStdPages = EPUBWordCounter.standardizedPages(forWords: avgWords, wordsPerPage: wordsPerPage)
-        let weekStdPages = EPUBWordCounter.standardizedPages(forWords: weekWords, wordsPerPage: wordsPerPage)
-        let wpmSamples = store.sessions.compactMap { session in
-            session.wordsPerMinute.flatMap { $0 > 0 ? $0 : nil }
-        }
-        let avgWPM = wpmSamples.isEmpty ? 0.0 : wpmSamples.reduce(0, +) / Double(wpmSamples.count)
-        let wordSessionSeconds = estimatedWordSessions.reduce(0) { $0 + $1.secs }
-        let avgStdPace = wordSessionSeconds > 0
-            ? (Double(totalWords) / Double(wordsPerPage)) / (Double(wordSessionSeconds) / 60.0)
-            : 0.0
+        // Word-based stats (Option 2) — device-independent, derived from
+        // Readium locator deltas mapped through the book's parsed word counts.
+        // Standardized pages use a 300-word-per-page divisor so the unit is
+        // roughly comparable to a paperback page regardless of source EPUB.
+        // Surfaced as the flip variant for the four page cards.
+        let wordSessions = store.sessions.filter { ($0.wordsRead ?? 0) > 0 }
+        let totalWords = wordSessions.reduce(0) { $0 + ($1.wordsRead ?? 0) }
+        let avgWords = wordSessions.isEmpty ? 0 : totalWords / wordSessions.count
+        let weekWords = lastNDaysWords(7).reduce(0, +)
+        let totalStdPages = EPUBWordCounter.standardizedPages(forWords: totalWords)
+        let avgStdPages = EPUBWordCounter.standardizedPages(forWords: avgWords)
+        let weekStdPages = EPUBWordCounter.standardizedPages(forWords: weekWords)
+        let wpmTotalMins = max(1, wordSessions.reduce(0) { $0 + $1.secs }) / 60
+        let avgWPM = wordSessions.isEmpty ? 0.0 : Double(totalWords) / Double(wpmTotalMins)
+        // Pace in standardized pages per minute, equivalent to WPM ÷ 300.
+        let avgStdPace = avgWPM / Double(EPUBWordCounter.wordsPerStandardPage)
 
         return LazyVGrid(columns: Layout.statsGridColumns(for: hSizeClass), spacing: 12) {
             statCard(label: "Total Read", value: Fmt.duration(totalSecs), sub: "all time", green: true)
@@ -338,7 +206,7 @@ struct StatsView: View {
                 label: "Total Pages",
                 value: "\(totalPages)",
                 sub: "all time",
-                publisher: PublisherStat(label: "Std Pages", value: "\(totalStdPages)", sub: "~\(wordsPerPage)w/page")
+                publisher: PublisherStat(label: "Std Pages", value: "\(totalStdPages)", sub: "~\(EPUBWordCounter.wordsPerStandardPage)w/page")
             )
             statCard(
                 id: "avg-pages",
@@ -358,7 +226,7 @@ struct StatsView: View {
                 id: "avg-pace",
                 label: "Avg Pace",
                 value: String(format: "%.2f", avgPace),
-                sub: "device pages/min",
+                sub: "pages/min",
                 publisher: PublisherStat(label: "Avg Pace", value: String(format: "%.2f", avgStdPace), sub: "std pages/min")
             )
             statCard(label: "Avg WPM", value: String(format: "%.0f", avgWPM), sub: "words/min")
@@ -482,16 +350,11 @@ struct StatsView: View {
                 Text(Fmt.dateAndTime(s.start))
                     .font(.system(size: 11))
                     .foregroundStyle(Theme.subtle)
-                HStack(spacing: 8) {
-                    if let pages = s.pages, pages > 0 {
-                        Text("\(pages) page\(pages == 1 ? "" : "s")")
-                    }
-                    if let wpm = s.wordsPerMinute, wpm > 0 {
-                        Text("\(Int(ceil(wpm))) WPM")
-                    }
+                if let pages = s.pages, pages > 0 {
+                    Text("\(pages) page\(pages == 1 ? "" : "s")")
+                        .font(.system(size: 11, weight: .heavy))
+                        .foregroundStyle(Theme.accent)
                 }
-                .font(.system(size: 11, weight: .heavy))
-                .foregroundStyle(Theme.accent)
                 if let progressDelta = s.progressDelta, progressDelta > 0 {
                     Text("+\(String(format: "%.1f", progressDelta * 100))%")
                         .font(.system(size: 11, weight: .heavy))
@@ -546,11 +409,11 @@ struct StatsView: View {
         return out
     }
 
-    private func lastNDaysEstimatedWords(_ n: Int, wordsPerPage: Int) -> [Int] {
+    private func lastNDaysPublisherPages(_ n: Int) -> [Int] {
         let cal = Calendar.current
         var map: [String: Int] = [:]
         for s in store.sessions {
-            map[Fmt.dayKey(s.start), default: 0] += estimatedWords(for: s, wordsPerPage: wordsPerPage)
+            map[Fmt.dayKey(s.start), default: 0] += s.publisherPages ?? 0
         }
         var out: [Int] = []
         for i in (0..<n).reversed() {
@@ -561,8 +424,19 @@ struct StatsView: View {
         return out
     }
 
-    private func estimatedWords(for session: ReadingSession, wordsPerPage: Int) -> Int {
-        session.resolvedWordsRead(fallbackWordsPerPage: wordsPerPage)
+    private func lastNDaysWords(_ n: Int) -> [Int] {
+        let cal = Calendar.current
+        var map: [String: Int] = [:]
+        for s in store.sessions {
+            map[Fmt.dayKey(s.start), default: 0] += s.wordsRead ?? 0
+        }
+        var out: [Int] = []
+        for i in (0..<n).reversed() {
+            if let d = cal.date(byAdding: .day, value: -i, to: Date()) {
+                out.append(map[Fmt.dayKey(d)] ?? 0)
+            }
+        }
+        return out
     }
 
     private func last7DaysSeconds() -> [(label: String, secs: Int)] {
@@ -609,36 +483,6 @@ struct StatsView: View {
         return store.books
             .filter { $0.finished && (cal.component(.year, from: $0.finishedAt ?? Date()) == yr) }
             .sorted { ($0.finishedAt ?? .distantPast) > ($1.finishedAt ?? .distantPast) }
-    }
-
-    private func handleFolderRescan(_ url: URL) {
-        Task {
-            let summary = await EPUBImporter.rescanFolder(url, into: store)
-            showToast(importSummaryMessage(summary, empty: "No EPUBs found"))
-        }
-    }
-
-    private func handleWatchedFolderSelection(_ url: URL) {
-        do {
-            try store.setWatchedFolder(url)
-        } catch {
-            showToast("Couldn't watch that folder")
-            return
-        }
-        Task {
-            let summary = await EPUBImporter.rescanFolder(url, into: store)
-            let name = store.watchedFolderName ?? "folder"
-            showToast(importSummaryMessage(summary, empty: "Watching \(name)"))
-        }
-    }
-
-    private func importSummaryMessage(_ summary: EPUBImporter.ImportSummary, empty: String) -> String {
-        var parts: [String] = []
-        if summary.added > 0 { parts.append("Added \(summary.added)") }
-        if summary.relinked > 0 { parts.append("relinked \(summary.relinked)") }
-        if summary.skipped > 0 { parts.append("skipped \(summary.skipped)") }
-        if summary.failed > 0 { parts.append("\(summary.failed) failed") }
-        return parts.isEmpty ? empty : parts.joined(separator: ", ")
     }
 
     private func exportBackup() {
@@ -715,141 +559,6 @@ struct StatsView: View {
             try? await Task.sleep(nanoseconds: 2_400_000_000)
             withAnimation(.easeIn(duration: 0.18)) { toastMessage = nil }
         }
-    }
-}
-
-private enum StatsFolderPickerPurpose {
-    case rescan
-    case watch
-}
-
-private struct WordsPerPageSettingsSheet: View {
-    @EnvironmentObject private var store: Store
-    @Environment(\.dismiss) private var dismiss
-    @State private var mode: WordsPerPageMode = .manual
-    @State private var wordsPerPage = ReaderSettings.defaultWordsPerPageForCurrentDevice
-
-    private var autoValue: Int? {
-        store.automaticWordsPerPageEstimate()
-    }
-
-    private var displayedWordsPerPage: Int {
-        mode == .automatic ? (autoValue ?? wordsPerPage) : wordsPerPage
-    }
-
-    private var valueLabel: String {
-        mode == .automatic && autoValue != nil ? "auto words" : "words"
-    }
-
-    var body: some View {
-        VStack(spacing: 14) {
-            Grabber()
-                .padding(.bottom, 0)
-
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Words Per Page")
-                        .font(.system(size: 17, weight: .heavy))
-                    Text(ReaderSettings.currentDeviceName)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Theme.subtle)
-                }
-                Spacer()
-                Button("Default") {
-                    mode = .manual
-                    wordsPerPage = ReaderSettings.defaultWordsPerPageForCurrentDevice
-                }
-                .font(.system(size: 13, weight: .heavy))
-                .foregroundStyle(Theme.accent)
-            }
-
-            Picker("Words Per Page Mode", selection: $mode) {
-                Text("Auto").tag(WordsPerPageMode.automatic)
-                Text("Manual").tag(WordsPerPageMode.manual)
-            }
-            .pickerStyle(.segmented)
-
-            HStack(spacing: 12) {
-                Button {
-                    wordsPerPage = max(50, wordsPerPage - 10)
-                } label: {
-                    Image(systemName: "minus")
-                        .font(.system(size: 15, weight: .heavy))
-                        .frame(width: 42, height: 42)
-                        .background(Theme.subtle.opacity(mode == .manual ? 0.12 : 0.06))
-                        .clipShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .disabled(mode == .automatic)
-                .opacity(mode == .automatic ? 0.45 : 1)
-
-                VStack(spacing: 2) {
-                    Text("\(displayedWordsPerPage)")
-                        .font(.system(size: 36, weight: .heavy))
-                        .monospacedDigit()
-                        .lineLimit(1)
-                    Text(valueLabel)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Theme.subtle)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 10)
-                .background(Theme.card)
-                .clipShape(RoundedRectangle(cornerRadius: Theme.cornerLarge))
-
-                Button {
-                    wordsPerPage = min(2_000, wordsPerPage + 10)
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 15, weight: .heavy))
-                        .frame(width: 42, height: 42)
-                        .background(Theme.subtle.opacity(mode == .manual ? 0.12 : 0.06))
-                        .clipShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .disabled(mode == .automatic)
-                .opacity(mode == .automatic ? 0.45 : 1)
-            }
-            .foregroundStyle(Theme.text)
-
-            HStack(spacing: 10) {
-                Button("Cancel") {
-                    dismiss()
-                }
-                .font(.system(size: 15, weight: .heavy))
-                .foregroundStyle(Theme.text)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-                .background(Theme.card)
-                .clipShape(RoundedRectangle(cornerRadius: Theme.cornerSmall))
-
-                Button("Save Changes") {
-                    save()
-                }
-                .font(.system(size: 15, weight: .heavy))
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-                .background(Theme.accent)
-                .clipShape(RoundedRectangle(cornerRadius: Theme.cornerSmall))
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .padding(.horizontal, 20)
-        .padding(.top, 12)
-        .padding(.bottom, 20)
-        .background(Theme.background)
-        .onAppear {
-            mode = store.readerSettings.wordsPerPageMode
-            wordsPerPage = store.readerSettings.wordsPerPageForCurrentDevice
-        }
-    }
-
-    private func save() {
-        store.readerSettings.wordsPerPageMode = mode
-        store.readerSettings.setWordsPerPageForCurrentDevice(wordsPerPage)
-        store.scheduleSave()
-        dismiss()
     }
 }
 

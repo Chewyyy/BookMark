@@ -431,6 +431,10 @@ final class ReadiumReaderLoader: ObservableObject {
     @Published var publisherPages: [ReadiumPublisherPage] = []
     @Published var error: String?
 
+    var totalPositions: Int? {
+        positionsByResource.isEmpty ? nil : positionsByResource.reduce(0) { $0 + $1.count }
+    }
+
     private let httpClient = DefaultHTTPClient()
     private lazy var assetRetriever = AssetRetriever(httpClient: httpClient)
     private lazy var publicationOpener = PublicationOpener(

@@ -6,10 +6,7 @@ import SwiftSoup
 /// content size that downstream stats (WPM, standardized pages, words/day)
 /// can be computed from regardless of which device the user reads on.
 enum EPUBWordCounter {
-    /// Standardized page size used by `standardizedPages(forWords:)`.
-    /// The user-facing "X pages" stat uses this as the divisor so that
-    /// long-form fiction, short fiction, and academic prose all roughly
-    /// agree on what "a page" means.
+    /// Default page size used by `standardizedPages(forWords:wordsPerPage:)`.
     static let wordsPerStandardPage = 300
 
     struct Result {
@@ -34,13 +31,12 @@ enum EPUBWordCounter {
         return Result(perSpine: perSpine, total: total)
     }
 
-    /// Number of standardized pages a word count corresponds to, using
-    /// `wordsPerStandardPage` as the divisor. Rounds up so partial pages
-    /// count — matches user intuition that "I read part of a page" should
-    /// register as 1.
-    static func standardizedPages(forWords words: Int) -> Int {
+    /// Number of pages a word count corresponds to. Rounds up so partial
+    /// pages count — matches user intuition that "I read part of a page"
+    /// should register as 1.
+    static func standardizedPages(forWords words: Int, wordsPerPage: Int = wordsPerStandardPage) -> Int {
         guard words > 0 else { return 0 }
-        return Int(ceil(Double(words) / Double(wordsPerStandardPage)))
+        return Int(ceil(Double(words) / Double(max(1, wordsPerPage))))
     }
 
     // MARK: - Internal

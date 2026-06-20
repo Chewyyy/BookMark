@@ -2,64 +2,6 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
-// MARK: - Library Tools
-
-struct LibraryToolsSheet: View {
-    let onImport: () -> Void
-    let onRescanFolder: () -> Void
-    let onWatchFolder: () -> Void
-    let onClearWatchedFolder: () -> Void
-    let onBackup: () -> Void
-    let onCsv: () -> Void
-    let onSaveToIPhone: () -> Void
-    let watchedFolderName: String?
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        VStack(spacing: 0) {
-            Grabber()
-            VStack(spacing: 4) {
-                Text("Library Tools").font(.system(size: 16, weight: .heavy))
-                Text("Import EPUBs or back up your reading data.")
-                    .font(.system(size: 12)).foregroundStyle(Theme.subtle)
-                    .multilineTextAlignment(.center)
-            }
-            .padding(.bottom, 14)
-
-            ActionGroup {
-                ActionRow(icon: "books.vertical.fill", title: "Import EPUB Files", action: { dismiss(); onImport() })
-                ActionRow(icon: "folder.badge.plus", title: "Rescan Folder", action: { dismiss(); onRescanFolder() })
-                ActionRow(
-                    icon: "folder.badge.gearshape",
-                    title: watchedFolderName.map { "Watching: \($0)" } ?? "Watch Import Folder",
-                    action: { dismiss(); onWatchFolder() }
-                )
-                if watchedFolderName != nil {
-                    ActionRow(icon: "xmark.circle", title: "Stop Watching Folder", destructive: true, action: { dismiss(); onClearWatchedFolder() })
-                }
-                ActionRow(icon: "arrow.down.doc", title: "Export Backup", action: { dismiss(); onBackup() })
-                ActionRow(icon: "iphone.gen2", title: "Save to This iPhone", action: { dismiss(); onSaveToIPhone() })
-                ActionRow(icon: "tablecells", title: "Export CSV", action: { dismiss(); onCsv() })
-            }
-            .padding(.bottom, 12)
-
-            ActionGroup {
-                Button { dismiss() } label: {
-                    Text("Cancel")
-                        .font(.system(size: 15, weight: .bold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                        .foregroundStyle(Theme.text)
-                }
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 12)
-        .padding(.bottom, 24)
-        .background(Theme.background)
-    }
-}
-
 // MARK: - Missing EPUB Recovery
 
 struct RelinkEPUBSheet: View {
@@ -156,19 +98,12 @@ struct BookDetailsSheet: View {
     private var sessionCount: Int { store.sessionsForBook(book).count }
     private var pct: Int { Int((store.progress[book.id]?.pct ?? 0) * 100) }
 
-    /// iPhone uses 300 words/page (paperback baseline). iPad uses 450 because
-    /// each visual page on the larger reader canvas holds more content, so
-    /// the resulting page count better matches what the user will actually
-    /// see while reading on that device. Uses `UIDevice.userInterfaceIdiom`
-    /// rather than horizontalSizeClass because the sheet presentation context
-    /// reports compact width on iPad regardless of device.
-    private var wordsPerPageForDevice: Int {
-        UIDevice.current.userInterfaceIdiom == .pad ? 450 : 300
-    }
-
     private var lengthValue: String? {
         guard let total = book.totalWords, total > 0 else { return nil }
-        let pages = Int(ceil(Double(total) / Double(wordsPerPageForDevice)))
+        let pages = EPUBWordCounter.standardizedPages(
+            forWords: total,
+            wordsPerPage: store.resolvedWordsPerPageForCurrentDevice()
+        )
         return "\(pages.formatted()) pages"
     }
 
@@ -745,6 +680,16 @@ struct DayDetailSheet: View {
                 Text(s.start, format: .dateTime.hour().minute())
                     .font(.system(size: 11))
                     .foregroundStyle(Theme.subtle)
+                HStack(spacing: 8) {
+                    if let pages = s.pages, pages > 0 {
+                        Text("\(pages) page\(pages == 1 ? "" : "s")")
+                    }
+                    if let wpm = s.wordsPerMinute, wpm > 0 {
+                        Text("\(Int(ceil(wpm))) WPM")
+                    }
+                }
+                .font(.system(size: 11, weight: .heavy))
+                .foregroundStyle(Theme.accent)
             }
             Spacer()
             Text(Fmt.duration(s.secs))
@@ -856,6 +801,7 @@ struct SessionEditorSheet: View {
     @State private var startDate: Date = Date()
     @State private var minutesText: String = ""
     @State private var pagesText: String = ""
+    @State private var wordsPerMinuteText: String = ""
     @State private var progressDeltaText: String = ""
     @State private var confirmDelete = false
 
@@ -911,6 +857,9 @@ struct SessionEditorSheet: View {
                     field("Pages", text: $pagesText)
                 }
                 .padding(.bottom, 10)
+
+                field("WPM", text: $wordsPerMinuteText)
+                    .padding(.bottom, 10)
 
                 VStack(alignment: .leading, spacing: 6) {
                     Text("PROGRESS CHANGE (%)")
@@ -983,6 +932,7 @@ struct SessionEditorSheet: View {
             startDate = session.start
             minutesText = "\(session.secs / 60)"
             pagesText = session.pages.map(String.init) ?? ""
+            wordsPerMinuteText = session.wordsPerMinute.map { "\(Int(ceil($0)))" } ?? ""
             // Show stored delta as a percent (storage uses 0...1 fractional).
             if let d = session.progressDelta {
                 progressDeltaText = String(format: "%g", d * 100)
@@ -1028,9 +978,14 @@ struct SessionEditorSheet: View {
         s.secs = max(0, mins * 60)
         s.end = Calendar.current.date(byAdding: .second, value: s.secs, to: startDate)
         s.pages = Int(pagesText)
-        // Accept either a fractional (0.5) or percentage (50) entry; store as fraction.
-        if let raw = Double(progressDeltaText.replacingOccurrences(of: ",", with: ".")) {
-            s.progressDelta = abs(raw) > 1 ? raw / 100.0 : raw
+        if let wpm = Double(wordsPerMinuteText), wpm > 0 {
+            s.wordsPerMinute = ceil(wpm)
+        } else {
+            s.wordsPerMinute = nil
+        }
+        // Field is labeled as percent, so 0.6 means 0.6%, stored as 0.006.
+        if let raw = Double(progressDeltaText.replacingOccurrences(of: ",", with: ".")), raw > 0 {
+            s.progressDelta = raw / 100.0
         } else {
             s.progressDelta = nil
         }

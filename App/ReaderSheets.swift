@@ -19,7 +19,6 @@ struct ReaderSettingsSheet: View {
                 themeGroup
                 spacingGroup
                 layoutGroup
-                pageCountGroup
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 28)
@@ -586,6 +585,13 @@ struct ReaderSearchSheet: View {
 
 // MARK: - Reader Contents (Chapters + Bookmarks)
 
+private struct ReaderContentsChapterRow: Identifiable {
+    let id: String
+    let title: String
+    let chapterIndex: Int
+    let depth: Int
+}
+
 struct ReaderContentsSheet: View {
     @ObservedObject var model: ReaderModel
     let bookId: String
@@ -632,36 +638,38 @@ struct ReaderContentsSheet: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 0) {
-                    if let pkg = model.package, !pkg.spine.isEmpty {
-                        ForEach(Array(pkg.spine.enumerated()), id: \.offset) { idx, entry in
+                    let rows = chapterRows
+                    if !rows.isEmpty {
+                        ForEach(rows) { row in
                             Button {
-                                onSelectChapter(idx)
+                                onSelectChapter(row.chapterIndex)
                             } label: {
-                                HStack {
-                                    Text(chapterDisplayTitle(idx: idx, fallback: entry.title))
-                                        .font(.system(size: 15, weight: idx == model.chapterIndex ? .heavy : .semibold))
+                                HStack(spacing: 10) {
+                                    Text(row.title)
+                                        .font(.system(size: 15, weight: chapterTitleWeight(row)))
                                         .foregroundStyle(model.theme.foregroundColor)
                                         .lineLimit(2)
                                         .multilineTextAlignment(.leading)
                                     Spacer()
-                                    if idx == model.chapterIndex {
+                                    if row.chapterIndex == model.chapterIndex {
                                         Image(systemName: "book.fill")
                                             .foregroundStyle(model.theme.accentColor)
                                     }
                                 }
-                                .padding(.horizontal, 16)
+                                .padding(.leading, 16 + CGFloat(min(row.depth, 3)) * 28)
+                                .padding(.trailing, 16)
                                 .padding(.vertical, 14)
-                                .background(chapterRowBackground(isCurrent: idx == model.chapterIndex))
+                                .background(chapterRowBackground(isCurrent: row.chapterIndex == model.chapterIndex))
                                 .overlay(alignment: .bottom) {
                                     Rectangle()
                                         .fill(Color.primary.opacity(0.12))
                                         .frame(height: 1)
-                                        .padding(.leading, 16)
+                                        .padding(.leading, 16 + CGFloat(min(row.depth, 3)) * 28)
                                 }
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
-                            .id(idx)
+                            .id(row.id)
                         }
                     } else {
                         Text("No chapters")
@@ -684,14 +692,45 @@ struct ReaderContentsSheet: View {
         }
     }
 
+    private var chapterRows: [ReaderContentsChapterRow] {
+        guard let pkg = model.package, !pkg.spine.isEmpty else { return [] }
+        let tocRows = pkg.toc.enumerated().compactMap { offset, entry -> ReaderContentsChapterRow? in
+            guard let chapterIndex = spineIndex(for: entry.href, in: pkg) else { return nil }
+            let title = entry.label.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !title.isEmpty else { return nil }
+            return ReaderContentsChapterRow(
+                id: "toc-\(offset)-\(chapterIndex)",
+                title: title,
+                chapterIndex: chapterIndex,
+                depth: max(0, entry.depth)
+            )
+        }
+        if !tocRows.isEmpty { return tocRows }
+
+        return pkg.spine.enumerated().map { idx, entry in
+            ReaderContentsChapterRow(
+                id: "spine-\(idx)",
+                title: chapterDisplayTitle(idx: idx, fallback: entry.title),
+                chapterIndex: idx,
+                depth: 0
+            )
+        }
+    }
+
     private func chapterRowBackground(isCurrent: Bool) -> some ShapeStyle {
         isCurrent ? AnyShapeStyle(model.theme.accentColor.opacity(0.16)) : AnyShapeStyle(Color.clear)
     }
 
+    private func chapterTitleWeight(_ row: ReaderContentsChapterRow) -> Font.Weight {
+        if row.chapterIndex == model.chapterIndex { return .heavy }
+        return row.depth == 0 ? .heavy : .semibold
+    }
+
     private func scrollToCurrentChapter(_ proxy: ScrollViewProxy) {
+        guard let targetId = chapterRows.first(where: { $0.chapterIndex == model.chapterIndex })?.id else { return }
         DispatchQueue.main.async {
             withAnimation(.easeOut(duration: 0.2)) {
-                proxy.scrollTo(model.chapterIndex, anchor: .center)
+                proxy.scrollTo(targetId, anchor: .center)
             }
         }
     }
@@ -702,6 +741,21 @@ struct ReaderContentsSheet: View {
         }
         let trimmed = fallback.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "Chapter \(idx + 1)" : trimmed
+    }
+
+    private func spineIndex(for href: String, in package: EPUBPackage) -> Int? {
+        let target = normalizedHref(href)
+        return package.spine.firstIndex { entry in
+            let spineHref = normalizedHref(entry.href)
+            return target == spineHref || target.hasPrefix("\(spineHref)#")
+        }
+    }
+
+    private func normalizedHref(_ href: String) -> String {
+        let decoded = href.removingPercentEncoding ?? href
+        return decoded
+            .replacingOccurrences(of: "\\", with: "/")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var bookmarksList: some View {

@@ -51,6 +51,15 @@ enum ReadingSpeedEstimator {
         return overallWPM(from: sessions)
     }
 
+    /// The pace surfaces should display when no real data exists yet —
+    /// keeps "time remaining" rows readable on a brand-new install.
+    static func wpmOrDefault(forBookID bookID: String?, sessions: [ReadingSession]) -> Double {
+        if let id = bookID, let pace = wpm(forBookID: id, sessions: sessions) {
+            return pace
+        }
+        return overallWPM(from: sessions) ?? defaultWPM
+    }
+
     // MARK: - Time remaining
 
     /// Minutes left to finish the book given current position in words.
@@ -81,12 +90,12 @@ enum ReadingSpeedEstimator {
 
     // MARK: - Internal helpers
 
-    /// Sessions filtered to stored WPM samples and sorted newest-first,
-    /// truncated to the recent window so a single ancient long-haul session
-    /// doesn't dominate.
+    /// Sessions filtered to "has wordsRead + has time" and sorted
+    /// newest-first, truncated to the recent window so a single ancient
+    /// long-haul session doesn't dominate.
     private static func wordSessionsByRecent(_ sessions: [ReadingSession]) -> [ReadingSession] {
         sessions
-            .filter { ($0.wordsPerMinute ?? 0) > 0 }
+            .filter { ($0.wordsRead ?? 0) > 0 && $0.secs > 0 }
             .sorted { $0.start > $1.start }
             .prefix(recentWindow * 2)  // include some older context for weighting
             .map { $0 }
@@ -98,15 +107,14 @@ enum ReadingSpeedEstimator {
     /// the number but doesn't flip it.
     private static func weightedWPM(from pool: [ReadingSession]) -> Double? {
         guard !pool.isEmpty else { return nil }
-        var weightedPace = 0.0
-        var totalWeight = 0.0
+        var weightedWords = 0.0
+        var weightedSecs = 0.0
         for (i, s) in pool.enumerated() {
-            guard let wpm = s.wordsPerMinute, wpm > 0 else { continue }
             let weight: Double = i < recentWindow ? 1.0 : 0.5
-            weightedPace += wpm * weight
-            totalWeight += weight
+            weightedWords += Double(s.wordsRead ?? 0) * weight
+            weightedSecs  += Double(s.secs) * weight
         }
-        guard totalWeight > 0 else { return nil }
-        return weightedPace / totalWeight
+        guard weightedSecs > 0 else { return nil }
+        return weightedWords / (weightedSecs / 60.0)
     }
 }

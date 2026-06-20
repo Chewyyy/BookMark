@@ -132,6 +132,13 @@ enum BackupMigration {
                 if let v = dict["secs"] as? Double { return Int(v) }
                 return 0
             }()
+            let wordsPerPage: Int? = {
+                if let v = dict["wordsPerPage"] as? Int { return v }
+                if let v = dict["wpp"] as? Int { return v }
+                if let v = dict["wordsPerPage"] as? Double { return Int(v) }
+                if let v = dict["wpp"] as? Double { return Int(v) }
+                return nil
+            }()
             return ReadingSession(
                 id: (dict["id"] as? String) ?? UUID().uuidString,
                 bookId: dict["bookId"] as? String,
@@ -142,6 +149,8 @@ enum BackupMigration {
                 pages: dict["pages"] as? Int,
                 publisherPages: dict["publisherPages"] as? Int,
                 wordsRead: dict["wordsRead"] as? Int,
+                wordsPerMinute: (dict["wordsPerMinute"] as? Double) ?? (dict["wpm"] as? Double),
+                wordsPerPage: wordsPerPage,
                 progressDelta: (dict["progressDelta"] as? Double) ?? (dict["dPct"] as? Double),
                 manual: (dict["manual"] as? Bool) ?? false
             )

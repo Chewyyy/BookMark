@@ -41,9 +41,7 @@ enum EPUBImporter {
                 }
             } catch {
                 summary.failed += 1
-                #if DEBUG
                 print("EPUB import failed: \(error)")
-                #endif
             }
         }
         return summary
@@ -84,9 +82,7 @@ enum EPUBImporter {
                 }
             } catch {
                 summary.failed += 1
-                #if DEBUG
                 print("EPUB folder rescan failed for \(url.lastPathComponent): \(error)")
-                #endif
             }
         }
         return summary
@@ -128,9 +124,7 @@ enum EPUBImporter {
             }
             return .success
         } catch {
-            #if DEBUG
             print("EPUB relink failed: \(error)")
-            #endif
             return .unreadable
         }
     }

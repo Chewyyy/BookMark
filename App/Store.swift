@@ -64,6 +64,7 @@ final class Store: ObservableObject {
         highlights     = (try? Self.load([String: [Highlight]].self,  from: dir.appendingPathComponent("highlights.json"))) ?? [:]
         goal           = (try? Self.load(ReadingGoal.self,            from: dir.appendingPathComponent("goal.json"))) ?? ReadingGoal()
         readerSettings = (try? Self.load(ReaderSettings.self,         from: dir.appendingPathComponent("reader.json"))) ?? ReaderSettings()
+        readerSettings.pageCountMode = .paginatedBook
         let watchedFolder = (try? Self.load(WatchedFolder.self, from: dir.appendingPathComponent("watched-folder.json")))
         watchedFolderBookmark = watchedFolder?.bookmarkData
         watchedFolderName = watchedFolder?.name
@@ -701,6 +702,81 @@ final class Store: ObservableObject {
         scheduleSave()
     }
 
+    var currentPaginationKey: PaginationKey {
+        PaginationKey(
+            font: readerSettings.font,
+            fontSize: readerSettings.fontSize,
+            bold: readerSettings.bold,
+            lineHeight: readerSettings.lineHeight,
+            margins: readerSettings.margins,
+            justify: readerSettings.justify,
+            deviceClass: UIDevice.current.userInterfaceIdiom == .pad ? "pad" : "phone"
+        )
+    }
+
+    func resolvedWordsPerPageForCurrentDevice() -> Int {
+        if readerSettings.wordsPerPageMode == .automatic,
+           let estimate = automaticWordsPerPageEstimate() {
+            return estimate
+        }
+        return readerSettings.wordsPerPageForCurrentDevice
+    }
+
+    func automaticWordsPerPageEstimate() -> Int? {
+        automaticWordsPerPageEstimate(for: currentPaginationKey)
+            ?? automaticWordsPerPageEstimate(for: .defaultLibraryKey)
+    }
+
+    private func automaticWordsPerPageEstimate(for key: PaginationKey) -> Int? {
+        if let paired = automaticWordsPerPageEstimate(for: key, requirePairedWords: true) {
+            return paired
+        }
+        return automaticWordsPerPageEstimate(for: key, requirePairedWords: false)
+    }
+
+    private func automaticWordsPerPageEstimate(for key: PaginationKey, requirePairedWords: Bool) -> Int? {
+        var chapterSamples: [Double] = []
+        var sampledWords = 0
+        var sampledPages = 0
+
+        for book in books {
+            guard let settings = book.paginationCache?[key] else { continue }
+            let legacyCounts = requirePairedWords ? nil : book.wordCountsPerSpine
+
+            var indexes = Set(settings.measuredChapterIndexes ?? [])
+            if indexes.isEmpty, settings.measuredChapterIndex >= 0 {
+                indexes.insert(settings.measuredChapterIndex)
+            }
+
+            for index in indexes where settings.pagesPerChapter.indices.contains(index) {
+                let words: Int? = {
+                    if let measuredWords = settings.measuredWordsPerChapter,
+                       measuredWords.indices.contains(index),
+                       measuredWords[index] > 0 {
+                        return measuredWords[index]
+                    }
+                    if let legacyCounts,
+                       legacyCounts.indices.contains(index),
+                       legacyCounts[index] > 0 {
+                        return legacyCounts[index]
+                    }
+                    return nil
+                }()
+                guard let words else { continue }
+                let pages = settings.pagesPerChapter[index]
+                guard pages > 0 else { continue }
+                sampledWords += words
+                sampledPages += pages
+                chapterSamples.append(Double(words) / Double(pages))
+            }
+        }
+
+        guard sampledWords >= 1_000, sampledPages >= 5, !chapterSamples.isEmpty else { return nil }
+        let raw = chapterSamples.reduce(0, +) / Double(chapterSamples.count)
+        let roundedToFive = Int((raw / 5.0).rounded() * 5.0)
+        return ReaderSettings.clampedWordsPerPage(roundedToFive)
+    }
+
     func markFinished(id: String, on date: Date = Date()) {
         guard let i = books.firstIndex(where: { $0.id == id }) else { return }
         books[i].finished = true
@@ -727,15 +803,33 @@ final class Store: ObservableObject {
     // MARK: - Sessions
 
     func addSession(_ s: ReadingSession) {
-        sessions.append(s)
+        sessions.append(sessionWithCalculatedPace(s))
         scheduleSave()
     }
 
     func updateSession(_ s: ReadingSession) {
         if let i = sessions.firstIndex(where: { $0.id == s.id }) {
-            sessions[i] = s
+            sessions[i] = sessionWithCalculatedPace(s)
             scheduleSave()
         }
+    }
+
+    private func sessionWithCalculatedPace(_ session: ReadingSession) -> ReadingSession {
+        var session = session
+        let effectiveWordsPerPage = session.wordsPerPage ?? resolvedWordsPerPageForCurrentDevice()
+        if session.wordsPerPage == nil, (session.pages ?? 0) > 0 {
+            session.wordsPerPage = effectiveWordsPerPage
+        }
+        if session.wordsPerMinute == nil,
+           let calculated = ReadingSession.calculatedWordsPerMinute(
+            wordsRead: session.wordsRead,
+            pages: session.pages,
+            seconds: session.secs,
+            wordsPerPage: effectiveWordsPerPage
+        ) {
+            session.wordsPerMinute = calculated
+        }
+        return session
     }
 
     func deleteSession(id: String) {
@@ -846,6 +940,7 @@ final class Store: ObservableObject {
         highlights = b.highlights ?? [:]
         goal = b.goal
         readerSettings = b.readerSettings
+        readerSettings.pageCountMode = .paginatedBook
         normalizeOrder()
         scheduleSave()
     }
@@ -858,13 +953,13 @@ final class Store: ObservableObject {
     }
 
     func makeSessionsCSV() -> String {
-        var rows: [String] = ["start,end,book,seconds,minutes,pages,publisherPages,wordsRead,manual"]
+        var rows: [String] = ["start,end,book,seconds,minutes,pages,publisherPages,wordsRead,wordsPerMinute,manual"]
         let isoFormatter = ISO8601DateFormatter()
         for s in sessions.sorted(by: { $0.start < $1.start }) {
             let start = isoFormatter.string(from: s.start)
             let end = s.end.map { isoFormatter.string(from: $0) } ?? ""
             let title = "\"\(s.bookTitle.replacingOccurrences(of: "\"", with: "\"\""))\""
-            rows.append("\(start),\(end),\(title),\(s.secs),\(s.secs / 60),\(s.pages.map(String.init) ?? ""),\(s.publisherPages.map(String.init) ?? ""),\(s.wordsRead.map(String.init) ?? ""),\(s.manual ? "1" : "0")")
+            rows.append("\(start),\(end),\(title),\(s.secs),\(s.secs / 60),\(s.pages.map(String.init) ?? ""),\(s.publisherPages.map(String.init) ?? ""),\(s.wordsRead.map(String.init) ?? ""),\(s.wordsPerMinute.map { String(format: "%.2f", $0) } ?? ""),\(s.manual ? "1" : "0")")
         }
         return rows.joined(separator: "\n")
     }

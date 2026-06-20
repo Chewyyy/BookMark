@@ -30,6 +30,7 @@ enum SessionCSV {
             let pages = max(0, Int(parseLoose(first(get, ["Session Pages", "Pages", "Pages Read"]) ?? "").rounded()))
             let publisherPages = max(0, Int(parseLoose(first(get, ["Publisher Pages", "Publisher Pages Read", "publisherPages"]) ?? "").rounded()))
             let wordsRead = max(0, Int(parseLoose(first(get, ["Words Read", "Words", "wordsRead"]) ?? "").rounded()))
+            let wordsPerMinute = parseLoose(first(get, ["Words Per Minute", "WPM", "wordsPerMinute"]) ?? "")
 
             let start = makeDate(dateStr: dateStr, timeStr: startTime)
             var end: Date? = endTime.flatMap { makeDate(dateStr: dateStr, timeStr: $0) }
@@ -54,6 +55,7 @@ enum SessionCSV {
                 pages: pages > 0 ? pages : nil,
                 publisherPages: publisherPages > 0 ? publisherPages : nil,
                 wordsRead: wordsRead > 0 ? wordsRead : nil,
+                wordsPerMinute: wordsPerMinute > 0 ? wordsPerMinute : nil,
                 manual: true
             )
 
@@ -160,6 +162,7 @@ enum SessionCSV {
         if let p = s.pages, p > 0 { n += 1 }
         if let p = s.publisherPages, p > 0 { n += 1 }
         if let w = s.wordsRead, w > 0 { n += 1 }
+        if let w = s.wordsPerMinute, w > 0 { n += 1 }
         if let d = s.progressDelta, d > 0 { n += 1 }
         if let bid = s.bookId, !bid.isEmpty { n += 1 }
         return n

@@ -98,31 +98,6 @@ struct ReaderView: View {
         return "~\(Fmt.duration(mins * 60)) left in this chapter"
     }
 
-    private var resolvedWordsPerPageForReaderContext: Int {
-        if store.readerSettings.wordsPerPageMode == .automatic,
-           let estimate = currentChapterWordsPerPageEstimate() {
-            return estimate
-        }
-        return store.resolvedWordsPerPageForCurrentDevice()
-    }
-
-    private var estimatedWordsPerPageDebugText: String {
-        "Estimated \(resolvedWordsPerPageForReaderContext) words per page"
-    }
-
-    private func currentChapterWordsPerPageEstimate() -> Int? {
-        guard let counts = book?.wordCountsPerSpine else { return nil }
-        let index = model.readiumResourceIndex ?? model.chapterIndex
-        guard counts.indices.contains(index), counts[index] > 0,
-              let settings = model.paginatedSettings,
-              settings.pagesPerChapter.indices.contains(index)
-        else { return nil }
-        let pages = max(1, settings.pagesPerChapter[index])
-        let raw = Double(counts[index]) / Double(pages)
-        let rounded = Int((raw / 5.0).rounded() * 5.0)
-        return ReaderSettings.clampedWordsPerPage(rounded)
-    }
-
     private var bookTimeRemainingText: String {
         guard let mins = minutesLeftInBook else { return "Calculating…" }
         return "~\(Fmt.duration(mins * 60)) left in book"
@@ -316,7 +291,6 @@ struct ReaderView: View {
                 onRunFromStart: { startPageAudit(fromStart: true) },
                 onBuildExactPagination: startExactPaginationBuild,
                 onBuildHiddenExactPagination: { startHiddenExactPaginationBuild() },
-                onAutoWordsPerPageDebug: writeAutoWordsPerPageDebugLog,
                 onStop: stopPageAudit,
                 onClear: { pageAuditLog = "" }
             )
@@ -385,11 +359,6 @@ struct ReaderView: View {
                 Text(chapterTimeRemainingText)
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(model.theme.foregroundColor.opacity(0.55))
-                    .lineLimit(1)
-                    .monospacedDigit()
-                Text(estimatedWordsPerPageDebugText)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(model.theme.foregroundColor.opacity(0.42))
                     .lineLimit(1)
                     .monospacedDigit()
             }
@@ -687,154 +656,6 @@ struct ReaderView: View {
         ]
     }
 
-    private func writeAutoWordsPerPageDebugLog() {
-        var lines: [String] = ["BookMark Auto WPP Debug"] + pageAuditMetadataLines
-        let globalResolved = store.resolvedWordsPerPageForCurrentDevice()
-        let autoEstimate = store.automaticWordsPerPageEstimate()
-        let currentChapterEstimate = currentChapterWordsPerPageEstimate()
-        lines.append("readerSettingsMode\t\(store.readerSettings.wordsPerPageMode.rawValue)")
-        lines.append("manualWordsPerPage\t\(store.readerSettings.wordsPerPageForCurrentDevice)")
-        lines.append("globalAutoEstimate\t\(autoEstimate.map(String.init) ?? "nil")")
-        lines.append("currentChapterAutoEstimate\t\(currentChapterEstimate.map(String.init) ?? "nil")")
-        lines.append("globalResolvedWordsPerPage\t\(globalResolved)")
-        lines.append("readerContextWordsPerPage\t\(resolvedWordsPerPageForReaderContext)")
-        lines.append("currentPaginationKey\t\(paginationKeyDebug(model.paginationKey))")
-        lines.append("storeCurrentPaginationKey\t\(paginationKeyDebug(store.currentPaginationKey))")
-        lines.append("defaultLibraryKey\t\(paginationKeyDebug(.defaultLibraryKey))")
-        lines.append("")
-
-        if let book {
-            lines.append(contentsOf: autoWordsPerPageDebugLines(book: book, key: model.paginationKey, label: "readerCurrentKey"))
-            lines.append("")
-            lines.append(contentsOf: autoWordsPerPageDebugLines(book: book, key: store.currentPaginationKey, label: "storeCurrentKey"))
-            lines.append("")
-            lines.append(contentsOf: autoWordsPerPageDebugLines(book: book, key: .defaultLibraryKey, label: "defaultLibraryKey"))
-            lines.append("")
-            lines.append(contentsOf: livePaginatedSettingsDebugLines(book: book))
-        } else {
-            lines.append("book\tnil")
-        }
-
-        pageAuditLog = lines.joined(separator: "\n")
-    }
-
-    private func autoWordsPerPageDebugLines(book: Book, key: PaginationKey, label: String) -> [String] {
-        guard let settings = book.paginationCache?[key] else {
-            return ["section\t\(label)", "cacheHit\tfalse"]
-        }
-        return autoWordsPerPageDebugLines(
-            section: label,
-            settings: settings,
-            fallbackWordCounts: book.wordCountsPerSpine
-        )
-    }
-
-    private func livePaginatedSettingsDebugLines(book: Book) -> [String] {
-        guard let settings = model.paginatedSettings else {
-            return ["section\tliveModel", "cacheHit\tfalse"]
-        }
-        return autoWordsPerPageDebugLines(
-            section: "liveModel",
-            settings: settings,
-            fallbackWordCounts: book.wordCountsPerSpine
-        )
-    }
-
-    private func autoWordsPerPageDebugLines(
-        section: String,
-        settings: PaginatedSettings,
-        fallbackWordCounts: [Int]?
-    ) -> [String] {
-        var indexes = Set(settings.measuredChapterIndexes ?? [])
-        if indexes.isEmpty, settings.measuredChapterIndex >= 0 {
-            indexes.insert(settings.measuredChapterIndex)
-        }
-        indexes = indexes.filter { settings.pagesPerChapter.indices.contains($0) }
-
-        let paired = autoWordsPerPageDebugTotals(
-            indexes: indexes,
-            pagesPerChapter: settings.pagesPerChapter,
-            wordsPerChapter: settings.measuredWordsPerChapter
-        )
-        let legacy = autoWordsPerPageDebugTotals(
-            indexes: indexes,
-            pagesPerChapter: settings.pagesPerChapter,
-            wordsPerChapter: fallbackWordCounts
-        )
-
-        return [
-            "section\t\(section)",
-            "cacheHit\ttrue",
-            "settingsProgress\t\(settings.progress)",
-            "settingsTotalPages\t\(settings.totalPages)",
-            "settingsDensity\t\(settings.wordsPerViewportPage)",
-            "measuredIndexesCount\t\(indexes.count)",
-            "measuredIndexes\t\(indexes.sorted().map(String.init).joined(separator: ","))",
-            "hasPairedWords\t\(settings.measuredWordsPerChapter != nil)",
-            "pairedWords\t\(paired.words)",
-            "pairedPages\t\(paired.pages)",
-            "pairedSampleCount\t\(paired.sampleCount)",
-            "pairedAggregateRawWPP\t\(paired.aggregateRawText)",
-            "pairedChapterAverageWPP\t\(paired.chapterAverageText)",
-            "pairedRoundedWPP\t\(paired.roundedText)",
-            "legacyWords\t\(legacy.words)",
-            "legacyPages\t\(legacy.pages)",
-            "legacySampleCount\t\(legacy.sampleCount)",
-            "legacyAggregateRawWPP\t\(legacy.aggregateRawText)",
-            "legacyChapterAverageWPP\t\(legacy.chapterAverageText)",
-            "legacyRoundedWPP\t\(legacy.roundedText)"
-        ]
-    }
-
-    private func autoWordsPerPageDebugTotals(indexes: Set<Int>, pagesPerChapter: [Int], wordsPerChapter: [Int]?) -> (words: Int, pages: Int, sampleCount: Int, aggregateRawText: String, chapterAverageText: String, roundedText: String) {
-        var words = 0
-        var pages = 0
-        var chapterSamples: [Double] = []
-
-        for index in indexes where pagesPerChapter.indices.contains(index) {
-            guard let wordsPerChapter,
-                  wordsPerChapter.indices.contains(index),
-                  wordsPerChapter[index] > 0
-            else { continue }
-
-            let chapterPages = pagesPerChapter[index]
-            guard chapterPages > 0 else { continue }
-
-            let chapterWords = wordsPerChapter[index]
-            words += chapterWords
-            pages += chapterPages
-            chapterSamples.append(Double(chapterWords) / Double(chapterPages))
-        }
-
-        guard words >= 1_000, pages >= 5, !chapterSamples.isEmpty else {
-            return (words, pages, chapterSamples.count, "nil", "nil", "nil")
-        }
-
-        let aggregateRaw = Double(words) / Double(pages)
-        let chapterAverage = chapterSamples.reduce(0, +) / Double(chapterSamples.count)
-        let rounded = ReaderSettings.clampedWordsPerPage(Int((chapterAverage / 5.0).rounded() * 5.0))
-        return (
-            words,
-            pages,
-            chapterSamples.count,
-            String(format: "%.2f", aggregateRaw),
-            String(format: "%.2f", chapterAverage),
-            "\(rounded)"
-        )
-    }
-
-    private func paginationKeyDebug(_ key: PaginationKey) -> String {
-        [
-            "font=\(key.font.rawValue)",
-            "fontSize=\(key.fontSize)",
-            "bold=\(key.bold)",
-            "lineHeight=\(key.lineHeight)",
-            "margins=\(key.margins.rawValue)",
-            "justify=\(key.justify)",
-            "device=\(key.deviceClass)"
-        ].joined(separator: ";")
-    }
-
     private func startPageAudit(fromStart: Bool) {
         guard model.epubURL != nil, !isPageAuditRunning else { return }
         pageAuditTask?.cancel()
@@ -925,7 +746,7 @@ struct ReaderView: View {
         var lines: [String] = ["BookMark Exact Pagination Build"] + pageAuditMetadataLines + [
             "chapterCount\t\(chapterCount)",
             "",
-            "chapterIndex\tstatus\tpages\twords\tnote"
+            "chapterIndex\tstatus\tpages\tnote"
         ]
         pageAuditLog = lines.joined(separator: "\n")
 
@@ -961,13 +782,13 @@ struct ReaderView: View {
                     pagesPerChapter[chapterIndex] = max(1, state.totalPages)
                     measuredIndexes.insert(chapterIndex)
                     measuredThisRun += 1
-                    lines.append("\(chapterIndex)\tmeasured\t\(state.totalPages)\t\(chapterWordsText(chapterIndex))\t")
+                    lines.append("\(chapterIndex)\tmeasured\t\(state.totalPages)\t")
                 } else {
                     let fallback = max(1, pagesPerChapter[chapterIndex])
                     pagesPerChapter[chapterIndex] = fallback
                     measuredIndexes.insert(chapterIndex)
                     measuredThisRun += 1
-                    lines.append("\(chapterIndex)\tinferred\t\(fallback)\t\(chapterWordsText(chapterIndex))\tviewportTimeoutFallback")
+                    lines.append("\(chapterIndex)\tinferred\t\(fallback)\tviewportTimeoutFallback")
                 }
                 pageAuditLog = lines.joined(separator: "\n")
             }
@@ -983,7 +804,6 @@ struct ReaderView: View {
                 let total = model.paginatedSettings?.totalPages ?? pagesPerChapter.reduce(0, +)
                 lines.append("")
                 lines.append("summary\tstatus=\(measuredTotal == chapterCount ? "complete" : "partial")\tmeasured=\(measuredTotal)/\(chapterCount)\tnewThisRun=\(measuredThisRun)\ttotal=\(total)\tcacheKey=\(model.paginationKey.font.rawValue)-\(model.paginationKey.fontSize)")
-                lines.append(contentsOf: exactPaginationWordsPerPageLines(pagesPerChapter: pagesPerChapter, measuredIndexes: measuredIndexes))
                 pageAuditLog = lines.joined(separator: "\n")
             }
 
@@ -1011,8 +831,7 @@ struct ReaderView: View {
         guard chapterCount > 0 else { return }
 
         let measuredCount = Set(settings.measuredChapterIndexes ?? []).filter { $0 >= 0 && $0 < chapterCount }.count
-        let hasMeasuredWords = book?.hasCompleteMeasuredWords(in: settings) ?? false
-        guard measuredCount < chapterCount || !hasMeasuredWords else { return }
+        guard measuredCount < chapterCount else { return }
 
         let key = model.paginationKey
         guard !automaticHiddenPaginationAttemptedKeys.contains(key) else { return }
@@ -1055,7 +874,7 @@ struct ReaderView: View {
             "resumeFromMeasured\t\(measuredIndexes.count)",
             "chaptersToMeasure\t\(chaptersToMeasure.count)",
             "",
-            "chapterIndex\tstatus\tpages\twords\tnote"
+            "chapterIndex\tstatus\tpages\tnote"
         ]
         pageAuditLog = hiddenPaginationLines.joined(separator: "\n")
     }
@@ -1087,7 +906,7 @@ struct ReaderView: View {
             }
             hiddenPaginationMeasuredIndexes.insert(chapterIndex)
             hiddenPaginationMeasuredThisRun += 1
-            hiddenPaginationLines.append("\(chapterIndex)\tinferred\t\(fallback)\t\(chapterWordsText(chapterIndex))\tviewportTimeoutFallback")
+            hiddenPaginationLines.append("\(chapterIndex)\tinferred\t\(fallback)\tviewportTimeoutFallback")
             pageAuditLog = hiddenPaginationLines.joined(separator: "\n")
             hiddenPaginationChaptersToMeasure.removeFirst()
             advanceHiddenPagination()
@@ -1108,7 +927,7 @@ struct ReaderView: View {
         }
         hiddenPaginationMeasuredIndexes.insert(target)
         hiddenPaginationMeasuredThisRun += 1
-        hiddenPaginationLines.append("\(target)\tmeasured\t\(state.totalPages)\t\(chapterWordsText(target))\thidden")
+        hiddenPaginationLines.append("\(target)\tmeasured\t\(state.totalPages)\thidden")
         pageAuditLog = hiddenPaginationLines.joined(separator: "\n")
         hiddenPaginationChaptersToMeasure.removeFirst()
         advanceHiddenPagination()
@@ -1133,7 +952,6 @@ struct ReaderView: View {
             let total = model.paginatedSettings?.totalPages ?? hiddenPaginationPagesPerChapter.reduce(0, +)
             hiddenPaginationLines.append("")
             hiddenPaginationLines.append("summary\tstatus=\(cancelled ? "cancelled" : (measuredTotal == chapterCount ? "complete" : "partial"))\tmeasured=\(measuredTotal)/\(chapterCount)\tnewThisRun=\(hiddenPaginationMeasuredThisRun)\ttotal=\(total)\tcacheKey=\(model.paginationKey.font.rawValue)-\(model.paginationKey.fontSize)")
-            hiddenPaginationLines.append(contentsOf: exactPaginationWordsPerPageLines(pagesPerChapter: hiddenPaginationPagesPerChapter, measuredIndexes: hiddenPaginationMeasuredIndexes))
             pageAuditLog = hiddenPaginationLines.joined(separator: "\n")
         }
 
@@ -1145,49 +963,6 @@ struct ReaderView: View {
         hiddenPaginationMeasuredThisRun = 0
         isPageAuditRunning = false
         pageAuditTask = nil
-    }
-
-    private func chapterWords(_ chapterIndex: Int) -> Int? {
-        guard let counts = book?.wordCountsPerSpine,
-              counts.indices.contains(chapterIndex),
-              counts[chapterIndex] > 0
-        else { return nil }
-        return counts[chapterIndex]
-    }
-
-    private func chapterWordsText(_ chapterIndex: Int) -> String {
-        chapterWords(chapterIndex).map(String.init) ?? ""
-    }
-
-    private func exactPaginationWordsPerPageLines(pagesPerChapter: [Int], measuredIndexes: Set<Int>) -> [String] {
-        var lines = [
-            "",
-            "Words Per Page",
-            "chapterIndex\twords\tpages\twordsPerPage"
-        ]
-        var samples: [Double] = []
-
-        for index in measuredIndexes.sorted() where pagesPerChapter.indices.contains(index) {
-            let pages = max(1, pagesPerChapter[index])
-            guard let words = chapterWords(index) else {
-                lines.append("\(index)\t\t\(pages)\t")
-                continue
-            }
-
-            let wordsPerPage = Double(words) / Double(pages)
-            samples.append(wordsPerPage)
-            lines.append("\(index)\t\(words)\t\(pages)\t\(String(format: "%.2f", wordsPerPage))")
-        }
-
-        guard !samples.isEmpty else {
-            lines.append("summary\tstatus=noWordCounts")
-            return lines
-        }
-
-        let average = samples.reduce(0, +) / Double(samples.count)
-        let rounded = ReaderSettings.clampedWordsPerPage(Int((average / 5.0).rounded() * 5.0))
-        lines.append("summary\tsamples=\(samples.count)\tchapterAverage=\(String(format: "%.2f", average))\trounded=\(rounded)")
-        return lines
     }
 
     private func waitForAuditStartChapter() async {
@@ -1290,6 +1065,7 @@ struct ReaderView: View {
     private func saveSession() {
         guard !sessionSaved, let book, elapsed >= 5 else { return }
         sessionSaved = true
+        let progressDelta = max(0, model.overallProgress - (sessionStartProgress ?? model.overallProgress))
         let pagesRead: Int = {
             if model.epubURL != nil {
                 return model.readiumSessionPagesRead
@@ -1297,16 +1073,6 @@ struct ReaderView: View {
             guard let startPage = sessionStartPage else { return 0 }
             return max(0, model.estimatedBookPage - startPage)
         }()
-        guard pagesRead > 0 else { return }
-
-        let progressDelta: Double = {
-            let totalPages = model.epubURL != nil
-                ? (model.paginatedSettings?.totalPages ?? model.displayPageTotal)
-                : model.estimatedBookPages
-            guard totalPages > 0 else { return 0 }
-            return max(0, min(1, Double(pagesRead) / Double(totalPages)))
-        }()
-
         let publisherPagesRead: Int? = {
             guard model.epubURL != nil,
                   let startPage = sessionStartPublisherPage,
@@ -1326,13 +1092,6 @@ struct ReaderView: View {
             let delta = end - start
             return delta > 0 ? delta : nil
         }()
-        let sessionWordsPerPage = model.readiumSessionWordsPerPage ?? resolvedWordsPerPageForReaderContext
-        let pageBasedWordsPerMinute = ReadingSession.calculatedWordsPerMinute(
-            wordsRead: nil,
-            pages: pagesRead > 0 ? pagesRead : nil,
-            seconds: elapsed,
-            wordsPerPage: sessionWordsPerPage
-        )
         let session = ReadingSession(
             bookId: book.id,
             bookTitle: book.title,
@@ -1342,8 +1101,6 @@ struct ReaderView: View {
             pages: pagesRead > 0 ? pagesRead : nil,
             publisherPages: publisherPagesRead,
             wordsRead: wordsRead,
-            wordsPerMinute: pageBasedWordsPerMinute,
-            wordsPerPage: sessionWordsPerPage,
             progressDelta: progressDelta > 0 ? progressDelta : nil,
             manual: false
         )
@@ -1401,7 +1158,7 @@ struct ReaderView: View {
         model.totalWords = book.totalWords
         model.resetReadiumSessionMetrics()
         model.hydratePaginatedSettings(book.paginationCache?[model.paginationKey])
-        sessionStartProgress = nil
+        sessionStartProgress = model.readiumProgress
         sessionStartPage = nil
         sessionStartPublisherPage = nil
         sessionStartWordOffset = nil
@@ -1427,7 +1184,6 @@ private struct ReaderPageAuditSheet: View {
     let onRunFromStart: () -> Void
     let onBuildExactPagination: () -> Void
     let onBuildHiddenExactPagination: () -> Void
-    let onAutoWordsPerPageDebug: () -> Void
     let onStop: () -> Void
     let onClear: () -> Void
 
@@ -1493,23 +1249,13 @@ private struct ReaderPageAuditSheet: View {
             }
             .disabled(isRunning || model.epubURL == nil)
 
-            HStack(spacing: 8) {
-                Button {
-                    onBuildHiddenExactPagination()
-                } label: {
-                    Label("Build Hidden Exact", systemImage: "eye.slash")
-                        .frame(maxWidth: .infinity)
-                }
-                .disabled(isRunning || model.epubURL == nil)
-
-                Button {
-                    onAutoWordsPerPageDebug()
-                } label: {
-                    Label("Auto WPP Debug", systemImage: "text.magnifyingglass")
-                        .frame(maxWidth: .infinity)
-                }
-                .disabled(isRunning || model.epubURL == nil)
+            Button {
+                onBuildHiddenExactPagination()
+            } label: {
+                Label("Build Hidden Exact", systemImage: "eye.slash")
+                    .frame(maxWidth: .infinity)
             }
+            .disabled(isRunning || model.epubURL == nil)
 
             HStack(spacing: 8) {
                 Button(role: .destructive) {
@@ -1653,7 +1399,6 @@ final class ReaderModel: ObservableObject {
     @Published var readiumPublisherPageTotal: Int?
     @Published private var readiumDisplayIsReady = false
     @Published private(set) var readiumSessionPagesRead = 0
-    private var readiumSessionPageWordEstimates: [Int] = []
     @Published private var displayPageOverride: Int?
     @Published private var paginatedPageOverride: Int?
     @Published private(set) var paginatedSettingsLoadedFromCache = false
@@ -1690,16 +1435,6 @@ final class ReaderModel: ObservableObject {
 
     var estimatedBookPage: Int {
         pagesBeforeCurrentChapter + currentPage
-    }
-
-    var readiumSessionEstimatedWordsRead: Int {
-        readiumSessionPageWordEstimates.reduce(0, +)
-    }
-
-    var readiumSessionWordsPerPage: Int? {
-        guard !readiumSessionPageWordEstimates.isEmpty else { return nil }
-        let rawAverage = Double(readiumSessionEstimatedWordsRead) / Double(readiumSessionPageWordEstimates.count)
-        return ReaderSettings.clampedWordsPerPage(Int((rawAverage / 5.0).rounded() * 5.0))
     }
 
     var estimatedBookPages: Int {
@@ -1830,7 +1565,6 @@ final class ReaderModel: ObservableObject {
 
     func resetReadiumSessionMetrics() {
         readiumSessionPagesRead = 0
-        readiumSessionPageWordEstimates = []
         pendingReadiumPageTurnDirection = nil
         pendingPaginatedPageTurnBase = nil
         readiumDisplayIsReady = false
@@ -1877,7 +1611,6 @@ final class ReaderModel: ObservableObject {
         let oldProgress = readiumProgress
         let oldPage = displayPageOverride ?? rawDisplayPage
         let oldPaginatedPage = pendingPaginatedPageTurnBase ?? paginatedBookCurrentPage
-        let oldResourceIndex = readiumResourceIndex
         let oldLocator = readiumLocatorJSON
         let expectedDirection = pendingReadiumPageTurnDirection
 
@@ -1919,15 +1652,6 @@ final class ReaderModel: ObservableObject {
             if let oldPaginatedPage {
                 paginatedPageOverride = boundedPaginatedBookPage(oldPaginatedPage + expectedDirection)
             }
-            if expectedDirection > 0 {
-                let sampleChapter = oldResourceIndex ?? location.resourceIndex
-                if let sampleChapter,
-                   let wordsPerPage = roundedWordsPerPageEstimate(for: sampleChapter) {
-                    readiumSessionPageWordEstimates.append(wordsPerPage)
-                }
-            } else if expectedDirection < 0, !readiumSessionPageWordEstimates.isEmpty {
-                readiumSessionPageWordEstimates.removeLast()
-            }
             readiumSessionPagesRead = max(0, readiumSessionPagesRead + expectedDirection)
         } else if readiumProgress > oldProgress {
             displayPageOverride = boundedDisplayPage(max(estimated, oldPage + 1))
@@ -1943,18 +1667,6 @@ final class ReaderModel: ObservableObject {
 
     private func boundedDisplayPage(_ page: Int) -> Int {
         max(1, min(displayPageTotal, page))
-    }
-
-    private func roundedWordsPerPageEstimate(for chapterIndex: Int) -> Int? {
-        guard let counts = wordCountsPerSpine,
-              counts.indices.contains(chapterIndex),
-              counts[chapterIndex] > 0,
-              let settings = paginatedSettings,
-              settings.pagesPerChapter.indices.contains(chapterIndex)
-        else { return nil }
-        let pages = max(1, settings.pagesPerChapter[chapterIndex])
-        let raw = Double(counts[chapterIndex]) / Double(pages)
-        return ReaderSettings.clampedWordsPerPage(Int((raw / 5.0).rounded() * 5.0))
     }
 
     /// Convert the current Readium location into an absolute word offset
@@ -2164,21 +1876,10 @@ final class ReaderModel: ObservableObject {
         measuredChapterIndexes: Set<Int>
     ) {
         guard !pagesPerChapter.isEmpty else { return }
-        let measuredWordsPerChapter: [Int]? = wordCountsPerSpine.map { counts in
-            counts.indices.map { measuredChapterIndexes.contains($0) ? max(0, counts[$0]) : 0 }
-        }
+        let totalPages = max(1, pagesPerChapter.reduce(0) { $0 + max(1, $1) })
         let density: Double = {
-            guard let measuredWordsPerChapter else { return wordsPerViewportPage ?? 0 }
-            let measuredWords = measuredChapterIndexes.reduce(0) { total, index in
-                guard measuredWordsPerChapter.indices.contains(index), pagesPerChapter.indices.contains(index) else { return total }
-                return total + measuredWordsPerChapter[index]
-            }
-            let measuredPages = measuredChapterIndexes.reduce(0) { total, index in
-                guard pagesPerChapter.indices.contains(index) else { return total }
-                return total + max(1, pagesPerChapter[index])
-            }
-            guard measuredWords > 0, measuredPages > 0 else { return wordsPerViewportPage ?? 0 }
-            return Double(measuredWords) / Double(measuredPages)
+            guard let totalWords, totalWords > 0 else { return wordsPerViewportPage ?? 0 }
+            return Double(totalWords) / Double(totalPages)
         }()
         paginatedSettingsKey = paginationKey
         paginatedSettings = PaginatedSettings(
@@ -2186,8 +1887,7 @@ final class ReaderModel: ObservableObject {
             progress: progress,
             measuredChapterIndex: -1,
             wordsPerViewportPage: density,
-            measuredChapterIndexes: Array(measuredChapterIndexes),
-            measuredWordsPerChapter: measuredWordsPerChapter
+            measuredChapterIndexes: Array(measuredChapterIndexes)
         )
         paginatedSettingsLoadedFromCache = false
         paginatedPageOverride = rawPaginatedBookCurrentPage
@@ -2228,14 +1928,12 @@ final class ReaderModel: ObservableObject {
         }
         pagesPerChapter[state.resourceIndex] = max(1, state.totalPages)
 
-        let measuredWordsPerChapter = counts.indices.map { $0 == state.resourceIndex ? max(0, counts[$0]) : 0 }
         return PaginatedSettings(
             pagesPerChapter: pagesPerChapter,
             progress: counts.isEmpty ? 0 : 1.0 / Double(counts.count),
             measuredChapterIndex: state.resourceIndex,
             wordsPerViewportPage: density,
-            measuredChapterIndexes: [state.resourceIndex],
-            measuredWordsPerChapter: measuredWordsPerChapter
+            measuredChapterIndexes: [state.resourceIndex]
         )
     }
 
@@ -2342,5 +2040,435 @@ private extension Bookmark {
 private extension String {
     var isReadiumLocatorJSON: Bool {
         trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("{")
+    }
+}
+
+// MARK: - Tap zones
+
+enum TapZone { case chapterBack, chapterForward, menu }
+
+// MARK: - Web view
+
+struct ReaderWebView: UIViewRepresentable {
+    let package: EPUBPackage
+    let chapterIndex: Int
+    let settings: ReaderSettings
+    let chapterBody: String
+    let initialPage: ReaderModel.InitialPage?
+    let onInitialPageHandled: () -> Void
+    let onPageInfo: (Int, Int) -> Void
+    let onTap: (TapZone) -> Void
+    let onReady: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeUIView(context: Context) -> UIView {
+        let container = UIView()
+        container.backgroundColor = .clear
+
+        let config = WKWebViewConfiguration()
+        config.suppressesIncrementalRendering = false
+
+        let handler = EPUBResourceHandler(archive: package.archive)
+        context.coordinator.schemeHandler = handler
+        config.setURLSchemeHandler(handler, forURLScheme: "epubres")
+
+        let content = WKUserContentController()
+        content.add(context.coordinator, name: "page")
+        content.add(context.coordinator, name: "tap")
+        content.add(context.coordinator, name: "ready")
+        config.userContentController = content
+
+        let web = WKWebView(frame: .zero, configuration: config)
+        web.scrollView.isPagingEnabled = false
+        web.scrollView.bounces = false
+        web.scrollView.showsHorizontalScrollIndicator = false
+        web.scrollView.showsVerticalScrollIndicator = false
+        web.scrollView.contentInsetAdjustmentBehavior = .never
+        web.scrollView.alwaysBounceHorizontal = false
+        web.scrollView.alwaysBounceVertical = false
+        web.isOpaque = false
+        web.backgroundColor = .clear
+        web.scrollView.backgroundColor = .clear
+        web.navigationDelegate = context.coordinator
+
+        web.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(web)
+        NSLayoutConstraint.activate([
+            web.topAnchor.constraint(equalTo: container.topAnchor),
+            web.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            web.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            web.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+        ])
+        context.coordinator.webView = web
+
+        // Initial load
+        context.coordinator.lastChapter = -1
+        context.coordinator.reloadIfNeeded(chapter: chapterIndex, body: chapterBody, settings: settings)
+        return container
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.reloadIfNeeded(chapter: chapterIndex, body: chapterBody, settings: settings)
+    }
+
+    final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
+        let parent: ReaderWebView
+        weak var webView: WKWebView?
+        var schemeHandler: EPUBResourceHandler?
+        var lastChapter: Int = -1
+        var lastSettingsHash: Int = 0
+
+        init(_ parent: ReaderWebView) { self.parent = parent }
+
+        func reloadIfNeeded(chapter: Int, body: String, settings: ReaderSettings) {
+            let settingsHash = settings.styleHash
+            if chapter == lastChapter && settingsHash == lastSettingsHash { return }
+            lastChapter = chapter
+            lastSettingsHash = settingsHash
+            let html = ReaderHTML.compose(body: body, settings: settings)
+            webView?.loadHTMLString(html, baseURL: URL(string: "epubres:///"))
+        }
+
+        func userContentController(_ uc: WKUserContentController, didReceive message: WKScriptMessage) {
+            switch message.name {
+            case "ready":
+                Task { @MainActor in
+                    parent.onReady()
+                    if let initial = parent.initialPage {
+                        let js: String
+                        switch initial {
+                        case .first: js = "window.bmGo && bmGo(1);"
+                        case .last:  js = "window.bmGoLast && bmGoLast();"
+                        case .page(let n): js = "window.bmGoStable && bmGoStable(\(n));"
+                        }
+                        _ = try? await self.webView?.evaluateJavaScript(js)
+                        parent.onInitialPageHandled()
+                    }
+                }
+            case "page":
+                if let dict = message.body as? [String: Any],
+                   let page = dict["page"] as? Int,
+                   let total = dict["total"] as? Int {
+                    Task { @MainActor in parent.onPageInfo(page, total) }
+                }
+            case "tap":
+                if let zone = message.body as? String {
+                    let z: TapZone = zone == "chapterBack" ? .chapterBack : zone == "chapterForward" ? .chapterForward : .menu
+                    Task { @MainActor in parent.onTap(z) }
+                }
+            default: break
+            }
+        }
+    }
+}
+
+
+
+// MARK: - HTML composition
+
+enum ReaderHTML {
+    static func compose(body: String, settings: ReaderSettings) -> String {
+        let palette = ReaderThemePalette.resolve(settings.theme)
+        let fontFamily = settings.font.cssFamily
+        let textAlign = settings.justify ? "justify" : "left"
+        let weight = settings.bold ? "600" : "400"
+        let marginValue: String = {
+            switch settings.margins {
+            case .narrow: return "16px"
+            case .normal: return "26px"
+            case .wide:   return "44px"
+            }
+        }()
+
+        // Paginated layout using CSS multi-column on a fixed-height container.
+        // Pages = horizontal scroll positions. JS drives the page/turn count.
+        let template = """
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<style>
+:root { color-scheme: \(palette.isDark ? "dark" : "light"); }
+html, body {
+  margin: 0; padding: 0;
+  background: \(palette.bgHex);
+  color: \(palette.fgHex);
+  font-family: \(fontFamily);
+  font-size: \(settings.fontSize)%;
+  font-weight: \(weight);
+  line-height: \(settings.lineHeight);
+  text-align: \(textAlign);
+  overflow: hidden;
+  -webkit-text-size-adjust: 100%;
+  -webkit-user-select: none;
+  user-select: none;
+}
+a { color: \(palette.linkHex); text-decoration: none; }
+img, svg, video { max-width: 100%; height: auto; display: block; margin: 6px auto 10px; }
+#viewport {
+  position: fixed; inset: 0;
+  padding: calc(env(safe-area-inset-top, 0px) + 18px) \(marginValue) calc(env(safe-area-inset-bottom, 0px) + 22px) \(marginValue);
+  box-sizing: border-box;
+  overflow: hidden;
+}
+#paged {
+  width: 100%;
+  column-width: calc(100vw - 2 * \(marginValue));
+  column-gap: 0;
+  column-fill: auto;
+  height: 100%;
+  overflow: hidden;
+  overflow-wrap: break-word;
+  position: relative;
+}
+#paged p { orphans: 2; widows: 2; }
+#paged h1, #paged h2, #paged h3 { line-height: 1.2; break-after: avoid; }
+#paged hr { border: none; border-top: 1px solid \(palette.subHex); opacity: .35; margin: 1.5em 0; }
+.bm-tap-zone { position: fixed; top: 0; bottom: 0; z-index: 9999; }
+.bm-prev { left: 0; width: 26%; }
+.bm-next { right: 0; width: 26%; }
+.bm-menu { left: 26%; right: 26%; }
+</style>
+</head>
+<body>
+<div id="viewport">
+  <div id="paged">\(body)</div>
+</div>
+<div class="bm-tap-zone bm-prev" data-zone="prev"></div>
+<div class="bm-tap-zone bm-next" data-zone="next"></div>
+<div class="bm-tap-zone bm-menu" data-zone="menu"></div>
+<script>
+(function() {
+  const paged = document.getElementById('paged');
+  const viewport = document.getElementById('viewport');
+  let currentPageState = 1;
+
+  function pageMetrics() {
+    const colW = Math.max(1, Math.round(paged.clientWidth));
+    const totalW = Math.max(paged.scrollWidth, colW);
+    const totalPages = Math.max(1, Math.ceil((totalW - 1) / colW));
+    currentPageState = Math.max(1, Math.min(totalPages, currentPageState));
+    return { colW, totalPages, currentPage: currentPageState };
+  }
+
+  function postPage() {
+    const { totalPages, currentPage } = pageMetrics();
+    window.webkit?.messageHandlers?.page?.postMessage({ page: currentPage, total: totalPages });
+  }
+
+  function applyPagePosition(colW) {
+    paged.style.transform = 'none';
+    paged.scrollLeft = (currentPageState - 1) * colW;
+  }
+
+  function goTo(page) {
+    const { colW, totalPages } = pageMetrics();
+    currentPageState = Math.max(1, Math.min(totalPages, page));
+    applyPagePosition(colW);
+    setTimeout(postPage, 0);
+  }
+
+  function nextPage() {
+    const { colW, totalPages, currentPage } = pageMetrics();
+    if (currentPage >= totalPages) {
+      window.webkit?.messageHandlers?.page?.postMessage({ page: currentPage, total: totalPages, eoc: true });
+      return false;
+    }
+    currentPageState = currentPage + 1;
+    applyPagePosition(colW);
+    setTimeout(postPage, 0);
+    return true;
+  }
+
+  function prevPage() {
+    const { colW, totalPages, currentPage } = pageMetrics();
+    if (currentPage <= 1) {
+      window.webkit?.messageHandlers?.page?.postMessage({ page: currentPage, total: totalPages, boc: true });
+      return false;
+    }
+    currentPageState = currentPage - 1;
+    applyPagePosition(colW);
+    setTimeout(postPage, 0);
+    return true;
+  }
+
+  window.bmNext = nextPage;
+  window.bmPrev = prevPage;
+  window.bmGo   = goTo;
+  window.bmGoStable = function(page) {
+    let attempts = 0;
+    function tryPage() {
+      goTo(page);
+      attempts += 1;
+      if (attempts < 10) {
+        setTimeout(tryPage, attempts < 4 ? 120 : 220);
+      }
+    }
+    setTimeout(tryPage, 80);
+  };
+  window.bmGoLast = function() {
+    let attempts = 0;
+    let bestTotal = 1;
+    let stableCount = 0;
+
+    function tryLastPage() {
+      const m = pageMetrics();
+      if (m.totalPages > bestTotal) {
+        bestTotal = m.totalPages;
+        stableCount = 0;
+      } else {
+        stableCount += 1;
+      }
+      currentPageState = bestTotal;
+      applyPagePosition(m.colW);
+      attempts += 1;
+
+      if (attempts < 16 && stableCount < 3) {
+        setTimeout(tryLastPage, attempts < 5 ? 120 : 220);
+      } else {
+        postPage();
+      }
+    }
+
+    setTimeout(tryLastPage, 80);
+  };
+
+  document.querySelectorAll('.bm-tap-zone').forEach(z => {
+    z.addEventListener('click', e => {
+      const zone = e.currentTarget.dataset.zone;
+      if (zone === 'prev') nextOrPrev('prev');
+      else if (zone === 'next') nextOrPrev('next');
+      else window.webkit?.messageHandlers?.tap?.postMessage('menu');
+    });
+  });
+
+  function nextOrPrev(dir) {
+    const did = dir === 'next' ? nextPage() : prevPage();
+    if (did) return;
+
+    setTimeout(function() {
+      const m = pageMetrics();
+      if (dir === 'next' && m.currentPage >= m.totalPages) {
+        window.webkit?.messageHandlers?.tap?.postMessage('chapterForward');
+      } else if (dir === 'prev' && m.currentPage <= 1) {
+        window.webkit?.messageHandlers?.tap?.postMessage('chapterBack');
+      }
+    }, 80);
+  }
+
+  // Layout-stable load: send metrics after images load.
+  function waitForImages() {
+    const imgs = Array.from(document.images || []);
+    if (!imgs.length) return Promise.resolve();
+    return Promise.all(imgs.map(img => img.complete ? Promise.resolve() : new Promise(res => {
+      img.addEventListener('load', res, { once: true });
+      img.addEventListener('error', res, { once: true });
+    })));
+  }
+
+  function ready() {
+    requestAnimationFrame(function() {
+      setTimeout(function() {
+        postPage();
+        window.webkit?.messageHandlers?.ready?.postMessage(true);
+      }, 60);
+    });
+  }
+
+  if (document.readyState === 'complete') waitForImages().then(ready);
+  else window.addEventListener('load', () => waitForImages().then(ready));
+
+  window.addEventListener('resize', () => setTimeout(function() {
+    const m = pageMetrics();
+    applyPagePosition(m.colW);
+    postPage();
+  }, 50));
+})();
+</script>
+</body>
+</html>
+"""
+        return template
+    }
+}
+
+private extension ReaderFont {
+    var cssFamily: String {
+        switch self {
+        case .original, .georgia, .serif:
+            return "Georgia, 'Times New Roman', serif"
+        case .palatino:
+            return "'Palatino Linotype', Palatino, 'Book Antiqua', serif"
+        case .charter:
+            return "Charter, 'Iowan Old Style', Georgia, serif"
+        case .times:
+            return "'Times New Roman', Times, serif"
+        case .sans, .system:
+            return "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif"
+        case .rounded:
+            return "ui-rounded, 'SF Pro Rounded', -apple-system, BlinkMacSystemFont, sans-serif"
+        case .mono:
+            return "ui-monospace, 'SF Mono', Menlo, monospace"
+        }
+    }
+}
+
+private extension ReaderSettings {
+    /// Used to invalidate the HTML payload when style-affecting settings change.
+    var styleHash: Int {
+        var h = Hasher()
+        h.combine(theme)
+        h.combine(font)
+        h.combine(fontSize)
+        h.combine(bold)
+        h.combine(lineHeight)
+        h.combine(margins)
+        h.combine(justify)
+        return h.finalize()
+    }
+}
+
+// MARK: - URL scheme handler
+
+final class EPUBResourceHandler: NSObject, WKURLSchemeHandler {
+    let archive: MiniZip.Archive
+    init(archive: MiniZip.Archive) { self.archive = archive }
+
+    func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
+        guard let url = urlSchemeTask.request.url else { return }
+        let path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let body = archive.extract(name: path) else {
+            urlSchemeTask.didFailWithError(NSError(domain: "epubres", code: 404))
+            return
+        }
+        let response = URLResponse(
+            url: url,
+            mimeType: mimeType(for: path),
+            expectedContentLength: body.count,
+            textEncodingName: nil
+        )
+        urlSchemeTask.didReceive(response)
+        urlSchemeTask.didReceive(body)
+        urlSchemeTask.didFinish()
+    }
+
+    func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {}
+
+    private func mimeType(for path: String) -> String {
+        let lower = path.lowercased()
+        if lower.hasSuffix(".jpg") || lower.hasSuffix(".jpeg") { return "image/jpeg" }
+        if lower.hasSuffix(".png") { return "image/png" }
+        if lower.hasSuffix(".gif") { return "image/gif" }
+        if lower.hasSuffix(".webp") { return "image/webp" }
+        if lower.hasSuffix(".svg") { return "image/svg+xml" }
+        if lower.hasSuffix(".css") { return "text/css" }
+        if lower.hasSuffix(".js")  { return "application/javascript" }
+        if lower.hasSuffix(".woff") { return "font/woff" }
+        if lower.hasSuffix(".woff2") { return "font/woff2" }
+        if lower.hasSuffix(".ttf") || lower.hasSuffix(".otf") { return "font/ttf" }
+        if lower.hasSuffix(".xhtml") || lower.hasSuffix(".html") || lower.hasSuffix(".htm") { return "application/xhtml+xml" }
+        return "application/octet-stream"
     }
 }

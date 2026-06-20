@@ -1,6 +1,47 @@
 import Foundation
 
 enum Fmt {
+    // DateFormatter construction is expensive and these run inside list rows
+    // (session lists, book cards, journal). Cache one instance per format so we
+    // don't allocate on every call. All access is from the main actor (UI), so
+    // the lack of DateFormatter thread-safety isn't a concern here.
+    private static let enUS = Locale(identifier: "en_US")
+
+    private static let compactDayMonth: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = enUS
+        f.setLocalizedDateFormatFromTemplate("MMM d")
+        return f
+    }()
+
+    private static let compactDayMonthYear: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = enUS
+        f.setLocalizedDateFormatFromTemplate("MMM d, yyyy")
+        return f
+    }()
+
+    private static let longDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = enUS
+        f.dateStyle = .long
+        return f
+    }()
+
+    private static let dateAndTimeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = enUS
+        f.dateFormat = "MMM d · h:mm a"
+        return f
+    }()
+
+    private static let monthFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = enUS
+        f.dateFormat = "MMM"
+        return f
+    }()
+
     static func duration(_ seconds: Int) -> String {
         let s = max(0, seconds)
         if s < 60 { return "\(s)s" }
@@ -17,24 +58,15 @@ enum Fmt {
     }
 
     static func compactDate(_ date: Date, includeYear: Bool = false) -> String {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US")
-        f.setLocalizedDateFormatFromTemplate(includeYear ? "MMM d, yyyy" : "MMM d")
-        return f.string(from: date)
+        (includeYear ? compactDayMonthYear : compactDayMonth).string(from: date)
     }
 
     static func longDate(_ date: Date) -> String {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US")
-        f.dateStyle = .long
-        return f.string(from: date)
+        longDateFormatter.string(from: date)
     }
 
     static func dateAndTime(_ date: Date) -> String {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US")
-        f.dateFormat = "MMM d · h:mm a"
-        return f.string(from: date)
+        dateAndTimeFormatter.string(from: date)
     }
 
     static func dayKey(_ date: Date) -> String {
@@ -51,10 +83,7 @@ enum Fmt {
         let sameYear = cal.component(.year, from: first) == cal.component(.year, from: last)
         let sameMonth = sameYear && cal.component(.month, from: first) == cal.component(.month, from: last)
         if sameMonth {
-            let mf = DateFormatter()
-            mf.locale = Locale(identifier: "en_US")
-            mf.dateFormat = "MMM"
-            return "\(mf.string(from: first)) \(cal.component(.day, from: first))–\(cal.component(.day, from: last))"
+            return "\(monthFormatter.string(from: first)) \(cal.component(.day, from: first))–\(cal.component(.day, from: last))"
         }
         return "\(compactDate(first, includeYear: !sameYear))–\(compactDate(last, includeYear: !sameYear))"
     }

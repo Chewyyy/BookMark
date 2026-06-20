@@ -6,9 +6,6 @@ struct LibraryView: View {
     @EnvironmentObject private var store: Store
     @Environment(\.horizontalSizeClass) private var hSizeClass
     @State private var showImporter = false
-    @State private var showFolderPicker = false
-    @State private var folderPickerPurpose: FolderPickerPurpose = .rescan
-    @State private var showLibraryTools = false
     @State private var bookActionTarget: Book?
     @State private var detailTarget: Book?
     @State private var finishTarget: Book?
@@ -57,48 +54,6 @@ struct LibraryView: View {
                 .padding(.bottom, 24)
             }
             .background(Theme.background)
-        }
-        .sheet(isPresented: $showLibraryTools) {
-            LibraryToolsSheet(
-                onImport: { showLibraryTools = false; showImporter = true },
-                onRescanFolder: {
-                    showLibraryTools = false
-                    folderPickerPurpose = .rescan
-                    showFolderPicker = true
-                },
-                onWatchFolder: {
-                    showLibraryTools = false
-                    folderPickerPurpose = .watch
-                    showFolderPicker = true
-                },
-                onClearWatchedFolder: {
-                    showLibraryTools = false
-                    store.clearWatchedFolder()
-                    toast("Stopped watching folder")
-                },
-                onBackup: { showLibraryTools = false; exportBackup() },
-                onCsv: { showLibraryTools = false; exportCsv() },
-                onSaveToIPhone: {
-                    showLibraryTools = false
-                    Task {
-                        if let msg = await AutoBackup.writeNow(store: store) { toast(msg) }
-                        else { toast("Couldn't save backup") }
-                    }
-                },
-                watchedFolderName: store.watchedFolderName
-            )
-            .presentationDetents([.medium])
-        }
-        .sheet(isPresented: $showFolderPicker) {
-            FolderPicker { url in
-                showFolderPicker = false
-                switch folderPickerPurpose {
-                case .rescan:
-                    handleFolderRescan(url)
-                case .watch:
-                    handleWatchedFolderSelection(url)
-                }
-            }
         }
         .sheet(item: $bookActionTarget) { book in
             BookActionsSheet(
@@ -150,7 +105,7 @@ struct LibraryView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Open Journal")
-            Button { showLibraryTools = true } label: {
+            Button { showImporter = true } label: {
                 Image(systemName: "plus.circle")
                     .font(.system(size: 22, weight: .heavy))
                     .foregroundStyle(Theme.accent)
@@ -389,10 +344,6 @@ struct LibraryView: View {
     }
 }
 
-private enum FolderPickerPurpose {
-    case rescan
-    case watch
-}
 
 private struct LibraryBookDropDelegate: DropDelegate {
     let targetBook: Book

@@ -92,6 +92,7 @@ struct PaginatedSettings: Codable, Hashable {
     var measuredChapterIndex: Int
     var wordsPerViewportPage: Double
     var measuredChapterIndexes: [Int]?
+    var measuredWordsPerChapter: [Int]?
 
     init(
         pagesPerChapter: [Int],
@@ -99,7 +100,8 @@ struct PaginatedSettings: Codable, Hashable {
         computedAt: Date = Date(),
         measuredChapterIndex: Int,
         wordsPerViewportPage: Double,
-        measuredChapterIndexes: [Int]? = nil
+        measuredChapterIndexes: [Int]? = nil,
+        measuredWordsPerChapter: [Int]? = nil
     ) {
         self.pagesPerChapter = pagesPerChapter.map { max(1, $0) }
         self.chapterPageOffsets = Self.offsets(for: self.pagesPerChapter)
@@ -109,6 +111,7 @@ struct PaginatedSettings: Codable, Hashable {
         self.measuredChapterIndex = measuredChapterIndex
         self.wordsPerViewportPage = wordsPerViewportPage
         self.measuredChapterIndexes = measuredChapterIndexes?.sorted()
+        self.measuredWordsPerChapter = measuredWordsPerChapter
     }
 
     private static func offsets(for pagesPerChapter: [Int]) -> [Int] {
@@ -147,6 +150,13 @@ struct ReadingSession: Identifiable, Codable, Hashable {
     /// the book's per-spine word counts and Readium's locator (resource index
     /// + progression). Foundation of WPM and standardized-page stats.
     var wordsRead: Int?
+    /// Words per minute calculated when the session is saved. For EPUB sessions
+    /// this comes from actual words read; for page-only sessions it uses the
+    /// active words-per-page estimate at that time.
+    var wordsPerMinute: Double?
+    /// Hidden snapshot of the effective words per device page for this session.
+    /// Used for stable historical word and standardized-page stats.
+    var wordsPerPage: Int?
     var progressDelta: Double?
     var manual: Bool
 
@@ -160,6 +170,8 @@ struct ReadingSession: Identifiable, Codable, Hashable {
         pages: Int? = nil,
         publisherPages: Int? = nil,
         wordsRead: Int? = nil,
+        wordsPerMinute: Double? = nil,
+        wordsPerPage: Int? = nil,
         progressDelta: Double? = nil,
         manual: Bool = false
     ) {
@@ -172,8 +184,44 @@ struct ReadingSession: Identifiable, Codable, Hashable {
         self.pages = pages
         self.publisherPages = publisherPages
         self.wordsRead = wordsRead
+        self.wordsPerMinute = wordsPerMinute
+        self.wordsPerPage = wordsPerPage
         self.progressDelta = progressDelta
         self.manual = manual
+    }
+
+    static func calculatedWordsPerMinute(wordsRead: Int?, pages: Int?, seconds: Int, wordsPerPage: Int) -> Double? {
+        guard seconds > 0 else { return nil }
+        let words = max(0, pages ?? 0) * wordsPerPage
+        guard words > 0 else { return nil }
+        return ceil(Double(words) / (Double(seconds) / 60.0))
+    }
+
+    func resolvedWordsRead(fallbackWordsPerPage: Int) -> Int {
+        if let wordsRead, wordsRead > 0 { return wordsRead }
+        if let sessionWordsPerPage = wordsPerPage, sessionWordsPerPage > 0 {
+            return max(0, pages ?? 0) * sessionWordsPerPage
+        }
+        if let wordsPerMinute, wordsPerMinute > 0, secs > 0 {
+            return Int((wordsPerMinute * Double(secs) / 60.0).rounded())
+        }
+        return max(0, pages ?? 0) * fallbackWordsPerPage
+    }
+
+    func storedOrActualWordsPerMinute() -> Double? {
+        if let wordsPerMinute, wordsPerMinute > 0 { return wordsPerMinute }
+        guard let wordsRead, wordsRead > 0, secs > 0 else { return nil }
+        return Double(wordsRead) / (Double(secs) / 60.0)
+    }
+
+    func resolvedWordsPerMinute(wordsPerPage: Int) -> Double? {
+        if let stored = storedOrActualWordsPerMinute() { return stored }
+        return Self.calculatedWordsPerMinute(
+            wordsRead: wordsRead,
+            pages: pages,
+            seconds: secs,
+            wordsPerPage: self.wordsPerPage ?? wordsPerPage
+        )
     }
 }
 
@@ -306,7 +354,15 @@ enum PageCountMode: String, Codable, CaseIterable, Hashable {
     case paginatedBook
 }
 
+enum WordsPerPageMode: String, Codable, CaseIterable, Hashable {
+    case manual
+    case automatic
+}
+
 struct ReaderSettings: Codable, Hashable {
+    static let defaultPhoneWordsPerPage = 300
+    static let defaultPadWordsPerPage = 450
+
     var theme: ReaderTheme = .paper
     var font: ReaderFont = .original
     var fontSize: Int = 100
@@ -318,12 +374,40 @@ struct ReaderSettings: Codable, Hashable {
     var swipe: Bool = true
     var keepAwake: Bool = true
     var brightness: Int = 100
-    var pageCountMode: PageCountMode = .positions
+    var pageCountMode: PageCountMode = .paginatedBook
+    var wordsPerPageMode: WordsPerPageMode = .manual
+    var phoneWordsPerPage: Int = Self.defaultPhoneWordsPerPage
+    var padWordsPerPage: Int = Self.defaultPadWordsPerPage
+
+    var wordsPerPageForCurrentDevice: Int {
+        UIDevice.current.userInterfaceIdiom == .pad ? padWordsPerPage : phoneWordsPerPage
+    }
+
+    static var defaultWordsPerPageForCurrentDevice: Int {
+        UIDevice.current.userInterfaceIdiom == .pad ? defaultPadWordsPerPage : defaultPhoneWordsPerPage
+    }
+
+    static var currentDeviceName: String {
+        UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"
+    }
 
     init() {}
 
+    mutating func setWordsPerPageForCurrentDevice(_ value: Int) {
+        let clamped = Self.clampedWordsPerPage(value)
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            padWordsPerPage = clamped
+        } else {
+            phoneWordsPerPage = clamped
+        }
+    }
+
+    static func clampedWordsPerPage(_ value: Int) -> Int {
+        max(50, min(2_000, value))
+    }
+
     private enum CodingKeys: String, CodingKey {
-        case theme, font, fontSize, bold, lineHeight, margins, justify, pageAnim, swipe, keepAwake, brightness, pageCountMode
+        case theme, font, fontSize, bold, lineHeight, margins, justify, pageAnim, swipe, keepAwake, brightness, pageCountMode, wordsPerPageMode, phoneWordsPerPage, padWordsPerPage
     }
 
     init(from decoder: Decoder) throws {
@@ -338,8 +422,11 @@ struct ReaderSettings: Codable, Hashable {
         pageAnim = try c.decodeIfPresent(PageAnimation.self, forKey: .pageAnim) ?? .slide
         swipe = try c.decodeIfPresent(Bool.self, forKey: .swipe) ?? true
         keepAwake = try c.decodeIfPresent(Bool.self, forKey: .keepAwake) ?? true
-        pageCountMode = try c.decodeIfPresent(PageCountMode.self, forKey: .pageCountMode) ?? .positions
+        pageCountMode = .paginatedBook
+        wordsPerPageMode = try c.decodeIfPresent(WordsPerPageMode.self, forKey: .wordsPerPageMode) ?? .manual
         brightness = try c.decodeIfPresent(Int.self, forKey: .brightness) ?? 100
+        phoneWordsPerPage = Self.clampedWordsPerPage(try c.decodeIfPresent(Int.self, forKey: .phoneWordsPerPage) ?? Self.defaultPhoneWordsPerPage)
+        padWordsPerPage = Self.clampedWordsPerPage(try c.decodeIfPresent(Int.self, forKey: .padWordsPerPage) ?? Self.defaultPadWordsPerPage)
     }
 }
 
