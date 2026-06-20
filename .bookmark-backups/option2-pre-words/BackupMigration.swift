@@ -88,27 +88,9 @@ enum BackupMigration {
                 coverData: decodeCover(dict["cover"] ?? dict["coverData"]),
                 fileBookmark: nil,
                 fileName: nil,
-                totalLocations: dict["totalLocations"] as? Int,
-                wordCountsPerSpine: dict["wordCountsPerSpine"] as? [Int],
-                totalWords: dict["totalWords"] as? Int,
-                paginationCache: decodePaginationCache(dict["paginationCache"])
+                totalLocations: dict["totalLocations"] as? Int
             )
         }
-    }
-
-    private struct PaginationCacheWrapper: Decodable {
-        var paginationCache: [PaginationKey: PaginatedSettings]?
-    }
-
-    private static func decodePaginationCache(_ raw: Any?) -> [PaginationKey: PaginatedSettings]? {
-        guard let raw else { return nil }
-        guard JSONSerialization.isValidJSONObject(["paginationCache": raw]),
-              let data = try? JSONSerialization.data(withJSONObject: ["paginationCache": raw])
-        else { return nil }
-
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return try? decoder.decode(PaginationCacheWrapper.self, from: data).paginationCache
     }
 
     private static func decodeCover(_ raw: Any?) -> Data? {
@@ -141,7 +123,6 @@ enum BackupMigration {
                 secs: secs,
                 pages: dict["pages"] as? Int,
                 publisherPages: dict["publisherPages"] as? Int,
-                wordsRead: dict["wordsRead"] as? Int,
                 progressDelta: (dict["progressDelta"] as? Double) ?? (dict["dPct"] as? Double),
                 manual: (dict["manual"] as? Bool) ?? false
             )
@@ -224,14 +205,6 @@ enum BackupMigration {
         if let v = raw["keepAwake"] as? Bool { s.keepAwake = v }
         if let v = raw["brightness"] as? Int { s.brightness = v }
         if let v = raw["brightness"] as? Double { s.brightness = Int(v) }
-        if let v = raw["pageCountMode"] as? String {
-            switch v {
-            case "viewportChapter": s.pageCountMode = .viewportChapter
-            case "viewportBook": s.pageCountMode = .viewportBook
-            case "paginatedBook": s.pageCountMode = .paginatedBook
-            default: s.pageCountMode = .positions
-            }
-        }
         return s
     }
 

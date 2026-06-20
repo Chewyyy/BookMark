@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 // MARK: - Library Tools
@@ -155,6 +156,40 @@ struct BookDetailsSheet: View {
     private var sessionCount: Int { store.sessionsForBook(book).count }
     private var pct: Int { Int((store.progress[book.id]?.pct ?? 0) * 100) }
 
+    /// iPhone uses 300 words/page (paperback baseline). iPad uses 450 because
+    /// each visual page on the larger reader canvas holds more content, so
+    /// the resulting page count better matches what the user will actually
+    /// see while reading on that device. Uses `UIDevice.userInterfaceIdiom`
+    /// rather than horizontalSizeClass because the sheet presentation context
+    /// reports compact width on iPad regardless of device.
+    private var wordsPerPageForDevice: Int {
+        UIDevice.current.userInterfaceIdiom == .pad ? 450 : 300
+    }
+
+    private var lengthValue: String? {
+        guard let total = book.totalWords, total > 0 else { return nil }
+        let pages = Int(ceil(Double(total) / Double(wordsPerPageForDevice)))
+        return "\(pages.formatted()) pages"
+    }
+
+    /// Estimated minutes left in the book at the user's learned pace.
+    /// Position derived from saved progress percentage × totalWords, since
+    /// the reader isn't open here.
+    private var timeRemainingValue: String? {
+        guard let totalWords = book.totalWords, totalWords > 0 else { return nil }
+        let pct = store.progress[book.id]?.pct ?? 0
+        let currentOffset = Int(Double(totalWords) * max(0, min(1, pct)))
+        guard let wpm = ReadingSpeedEstimator.wpm(forBookID: book.id, sessions: store.sessions),
+              let mins = ReadingSpeedEstimator.minutesRemainingInBook(
+                book: book,
+                currentWordOffset: currentOffset,
+                wpm: wpm
+              ),
+              mins > 0
+        else { return nil }
+        return "~\(Fmt.duration(mins * 60))"
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             Grabber()
@@ -165,6 +200,12 @@ struct BookDetailsSheet: View {
             .padding(.bottom, 14)
 
             ActionGroup {
+                if let lengthValue {
+                    DetailRow(label: "Length", value: lengthValue)
+                }
+                if !book.finished, let timeRemainingValue {
+                    DetailRow(label: "Time remaining", value: timeRemainingValue)
+                }
                 DetailRow(label: "Progress", value: "\(pct)%")
                 DetailRow(label: "Time read", value: Fmt.duration(totalSecs))
                 DetailRow(label: "Sessions", value: "\(sessionCount)")

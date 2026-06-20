@@ -164,72 +164,52 @@ struct StatsView: View {
         let finishedCount = store.books.filter(\.finished).count
         let avgSession = store.sessions.isEmpty ? 0 : totalSecs / store.sessions.count
         let weekSecs = lastNDaysSeconds(7).reduce(0, +)
-        // Swipe-page stats (the default face of the four page cards).
         let totalPages = store.sessions.reduce(0) { $0 + ($1.pages ?? 0) }
         let pageSessions = store.sessions.filter { ($0.pages ?? 0) > 0 }
         let avgPages = pageSessions.isEmpty ? 0 : totalPages / pageSessions.count
         let weekPages = lastNDaysPages(7).reduce(0, +)
         let paceTotalMins = max(1, pageSessions.reduce(0) { $0 + $1.secs }) / 60
         let avgPace = pageSessions.isEmpty ? 0.0 : Double(pageSessions.reduce(0) { $0 + ($1.pages ?? 0) }) / Double(paceTotalMins)
-        // Word-based stats (Option 2) — device-independent, derived from
-        // Readium locator deltas mapped through the book's parsed word counts.
-        // Standardized pages use a 300-word-per-page divisor so the unit is
-        // roughly comparable to a paperback page regardless of source EPUB.
-        // Surfaced as the flip variant for the four page cards.
-        let wordSessions = store.sessions.filter { ($0.wordsRead ?? 0) > 0 }
-        let totalWords = wordSessions.reduce(0) { $0 + ($1.wordsRead ?? 0) }
-        let avgWords = wordSessions.isEmpty ? 0 : totalWords / wordSessions.count
-        let weekWords = lastNDaysWords(7).reduce(0, +)
-        let totalStdPages = EPUBWordCounter.standardizedPages(forWords: totalWords)
-        let avgStdPages = EPUBWordCounter.standardizedPages(forWords: avgWords)
-        let weekStdPages = EPUBWordCounter.standardizedPages(forWords: weekWords)
-        let wpmTotalMins = max(1, wordSessions.reduce(0) { $0 + $1.secs }) / 60
-        let avgWPM = wordSessions.isEmpty ? 0.0 : Double(totalWords) / Double(wpmTotalMins)
-        // Pace in standardized pages per minute, equivalent to WPM ÷ 300.
-        let avgStdPace = avgWPM / Double(EPUBWordCounter.wordsPerStandardPage)
+        let totalPublisherPages = store.sessions.reduce(0) { $0 + ($1.publisherPages ?? 0) }
+        let publisherPageSessions = store.sessions.filter { ($0.publisherPages ?? 0) > 0 }
+        let avgPublisherPages = publisherPageSessions.isEmpty ? 0 : totalPublisherPages / publisherPageSessions.count
+        let weekPublisherPages = lastNDaysPublisherPages(7).reduce(0, +)
+        let publisherPaceTotalMins = max(1, publisherPageSessions.reduce(0) { $0 + $1.secs }) / 60
+        let avgPublisherPace = publisherPageSessions.isEmpty ? 0.0 : Double(totalPublisherPages) / Double(publisherPaceTotalMins)
 
         return LazyVGrid(columns: Layout.statsGridColumns(for: hSizeClass), spacing: 12) {
             statCard(label: "Total Read", value: Fmt.duration(totalSecs), sub: "all time", green: true)
             statCard(label: "Finished", value: "\(finishedCount)", sub: "books completed")
-            // Time card flips between week total (default) and avg session.
-            statCard(
-                id: "session-week-flip",
-                label: "This Week",
-                value: Fmt.duration(weekSecs),
-                sub: "last 7 days",
-                publisher: PublisherStat(label: "Avg Session", value: Fmt.duration(avgSession), sub: "per session")
-            )
-            // Page cards: default = swipe-page count (device-dependent),
-            // flip = standardized pages (device-independent, ~300w each).
+            statCard(label: "Avg Session", value: Fmt.duration(avgSession), sub: "per session")
+            statCard(label: "This Week", value: Fmt.duration(weekSecs), sub: "last 7 days")
             statCard(
                 id: "total-pages",
                 label: "Total Pages",
                 value: "\(totalPages)",
                 sub: "all time",
-                publisher: PublisherStat(label: "Std Pages", value: "\(totalStdPages)", sub: "~\(EPUBWordCounter.wordsPerStandardPage)w/page")
+                publisher: PublisherStat(label: "Total Pages", value: "\(totalPublisherPages)", sub: "publisher")
             )
             statCard(
                 id: "avg-pages",
                 label: "Avg Pages",
                 value: "\(avgPages)",
                 sub: "per session",
-                publisher: PublisherStat(label: "Avg Std Pages", value: "\(avgStdPages)", sub: "per session")
+                publisher: PublisherStat(label: "Avg Pages", value: "\(avgPublisherPages)", sub: "publisher/session")
             )
             statCard(
                 id: "week-pages",
                 label: "Pages This Week",
                 value: "\(weekPages)",
                 sub: "last 7 days",
-                publisher: PublisherStat(label: "Std Pages Week", value: "\(weekStdPages)", sub: "last 7 days")
+                publisher: PublisherStat(label: "Pages This Week", value: "\(weekPublisherPages)", sub: "publisher")
             )
             statCard(
                 id: "avg-pace",
                 label: "Avg Pace",
                 value: String(format: "%.2f", avgPace),
                 sub: "pages/min",
-                publisher: PublisherStat(label: "Avg Pace", value: String(format: "%.2f", avgStdPace), sub: "std pages/min")
+                publisher: PublisherStat(label: "Avg Pace", value: String(format: "%.2f", avgPublisherPace), sub: "publisher/min")
             )
-            statCard(label: "Avg WPM", value: String(format: "%.0f", avgWPM), sub: "words/min")
         }
     }
 
@@ -268,10 +248,18 @@ struct StatsView: View {
 
     private func statCardFace(label: String, value: String, sub: String, green: Bool, isPublisher: Bool) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(label.uppercased())
-                .font(.system(size: 10, weight: .bold))
-                .tracking(0.7)
-                .foregroundStyle(green ? Color.white.opacity(0.7) : Theme.subtle)
+            HStack(alignment: .top, spacing: 2) {
+                Text(label.uppercased())
+                    .font(.system(size: 10, weight: .bold))
+                    .tracking(0.7)
+                    .foregroundStyle(green ? Color.white.opacity(0.7) : Theme.subtle)
+                if isPublisher {
+                    Text("P")
+                        .font(.system(size: 8, weight: .heavy))
+                        .baselineOffset(4)
+                        .foregroundStyle(Theme.accent)
+                }
+            }
             Text(value)
                 .font(.system(size: 28, weight: .heavy))
                 .tracking(-1)
@@ -414,21 +402,6 @@ struct StatsView: View {
         var map: [String: Int] = [:]
         for s in store.sessions {
             map[Fmt.dayKey(s.start), default: 0] += s.publisherPages ?? 0
-        }
-        var out: [Int] = []
-        for i in (0..<n).reversed() {
-            if let d = cal.date(byAdding: .day, value: -i, to: Date()) {
-                out.append(map[Fmt.dayKey(d)] ?? 0)
-            }
-        }
-        return out
-    }
-
-    private func lastNDaysWords(_ n: Int) -> [Int] {
-        let cal = Calendar.current
-        var map: [String: Int] = [:]
-        for s in store.sessions {
-            map[Fmt.dayKey(s.start), default: 0] += s.wordsRead ?? 0
         }
         var out: [Int] = []
         for i in (0..<n).reversed() {

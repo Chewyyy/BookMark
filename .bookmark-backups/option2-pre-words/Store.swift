@@ -19,7 +19,6 @@ final class Store: ObservableObject {
     @Published var backupFolderBookmark: Data?
     @Published var backupFolderName: String?
     @Published var didHydrate = false
-    @Published var libraryPaginationStatus: LibraryPaginationStatus?
 
     static let appGroupId = "group.com.bdeavilla.bookmark"
     static let usesAppGroupStorage = false
@@ -545,38 +544,30 @@ final class Store: ObservableObject {
 
     @discardableResult
     func addBook(_ b: Book) -> Bool {
-        addOrAttachBook(b).added
-    }
-
-    func addOrAttachBook(_ b: Book) -> (added: Bool, bookId: String) {
         var book = b
         if let fileName = book.fileName,
-           let attachedBookID = attachEPUBFile(
+           attachEPUBFile(
             title: book.title,
             author: book.author,
             coverData: book.coverData,
             fileName: fileName,
             contentFingerprint: book.contentFingerprint
            ) {
-            return (false, attachedBookID)
+            return false
         }
         book.order = books.count
         books.append(book)
         reconcileReadableBookFiles()
         normalizeOrder()
         scheduleSave()
-        return (true, book.id)
+        return true
     }
 
-    func attachEPUBFile(title: String, author: String, coverData: Data?, fileName: String, contentFingerprint: String?) -> String? {
+    func attachEPUBFile(title: String, author: String, coverData: Data?, fileName: String, contentFingerprint: String?) -> Bool {
         guard let i = books.firstIndex(where: {
-            guard !epubFileExists(for: $0) else { return false }
-            if let contentFingerprint, $0.contentFingerprint == contentFingerprint {
-                return true
-            }
-            return normalize($0.title) == normalize(title) && authorsMatch($0.author, author)
+            !epubFileExists(for: $0) && normalize($0.title) == normalize(title) && authorsMatch($0.author, author)
         }) else {
-            return nil
+            return false
         }
 
         books[i].fileName = fileName
@@ -588,11 +579,11 @@ final class Store: ObservableObject {
             books[i].author = author
         }
         scheduleSave()
-        return books[i].id
+        return true
     }
 
     func containsBook(contentFingerprint: String) -> Bool {
-        books.contains { $0.contentFingerprint == contentFingerprint && epubFileExists(for: $0) }
+        books.contains { $0.contentFingerprint == contentFingerprint }
     }
 
     private func reconcileReadableBookFiles() {
@@ -679,25 +670,6 @@ final class Store: ObservableObject {
         if let t = title, !t.isEmpty, t != "Untitled" { books[i].title = t }
         if let a = author, !a.isEmpty, !isUnknownAuthor(a) { books[i].author = a }
         if let c = coverData { books[i].coverData = c }
-        scheduleSave()
-    }
-
-    /// Persist the parsed word counts for a book. Called asynchronously after
-    /// import or backfill so the user-facing import flow isn't blocked by
-    /// SwiftSoup parsing on long textbooks.
-    func updateWordCounts(bookId: String, perSpine: [Int], total: Int) {
-        guard let i = books.firstIndex(where: { $0.id == bookId }) else { return }
-        books[i].wordCountsPerSpine = perSpine
-        books[i].totalWords = total
-        scheduleSave()
-    }
-
-    func updatePaginationCache(bookId: String, key: PaginationKey, settings: PaginatedSettings) {
-        guard let i = books.firstIndex(where: { $0.id == bookId }) else { return }
-        var cache = books[i].paginationCache ?? [:]
-        guard cache[key] != settings else { return }
-        cache[key] = settings
-        books[i].paginationCache = cache
         scheduleSave()
     }
 
@@ -858,13 +830,13 @@ final class Store: ObservableObject {
     }
 
     func makeSessionsCSV() -> String {
-        var rows: [String] = ["start,end,book,seconds,minutes,pages,publisherPages,wordsRead,manual"]
+        var rows: [String] = ["start,end,book,seconds,minutes,pages,publisherPages,manual"]
         let isoFormatter = ISO8601DateFormatter()
         for s in sessions.sorted(by: { $0.start < $1.start }) {
             let start = isoFormatter.string(from: s.start)
             let end = s.end.map { isoFormatter.string(from: $0) } ?? ""
             let title = "\"\(s.bookTitle.replacingOccurrences(of: "\"", with: "\"\""))\""
-            rows.append("\(start),\(end),\(title),\(s.secs),\(s.secs / 60),\(s.pages.map(String.init) ?? ""),\(s.publisherPages.map(String.init) ?? ""),\(s.wordsRead.map(String.init) ?? ""),\(s.manual ? "1" : "0")")
+            rows.append("\(start),\(end),\(title),\(s.secs),\(s.secs / 60),\(s.pages.map(String.init) ?? ""),\(s.publisherPages.map(String.init) ?? ""),\(s.manual ? "1" : "0")")
         }
         return rows.joined(separator: "\n")
     }

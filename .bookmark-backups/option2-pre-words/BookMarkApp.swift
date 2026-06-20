@@ -13,11 +13,6 @@ struct BookMarkApp: App {
                 .task {
                     await store.hydrate()
                     await scanWatchedFolder()
-                    // Books imported before word-count tracking existed don't
-                    // have totalWords yet. Walk the library once and parse
-                    // anything missing — each parse runs on a utility-priority
-                    // background task so launch isn't blocked.
-                    EPUBImporter.backfillWordCounts(into: store)
                     await ReadingReminderScheduler.reschedule(for: store, requestAuthorizationIfNeeded: true)
                 }
                 .onChange(of: scenePhase) { _, phase in

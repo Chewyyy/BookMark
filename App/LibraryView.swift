@@ -196,6 +196,18 @@ struct LibraryView: View {
                     .foregroundStyle(Theme.subtle)
                 Spacer()
             }
+            if let status = store.libraryPaginationStatus {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.mini)
+                    Text(status.text)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Theme.subtle)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .accessibilityLabel(status.text)
+            }
         }
     }
 
@@ -576,6 +588,11 @@ struct BookCard: View {
                             .foregroundStyle(Theme.accent)
                     }
                 }
+                Text(book.defaultLibraryPaginationText ?? " ")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Theme.subtle)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 // Always reserve the date-range line (use a space when empty)
                 // so every card lays out at the same height in the 2-column
                 // grid, even when some books have no sessions yet.

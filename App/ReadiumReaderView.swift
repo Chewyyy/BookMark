@@ -42,12 +42,28 @@ struct ReadiumChapterJump: Equatable {
     }
 }
 
+struct ReadiumDiagnosticPageTurnRequest: Equatable {
+    let id: UUID
+    let direction: Int
+
+    init(direction: Int) {
+        self.id = UUID()
+        self.direction = direction < 0 ? -1 : 1
+    }
+}
+
+struct ReadiumDiagnosticPageTurnResult: Equatable {
+    let requestID: UUID
+    let moved: Bool
+}
+
 struct ReadiumReaderContainer: View {
     let epubURL: URL
     let settings: ReaderSettings
     let initialProgress: Double
     let pendingLocatorJSON: String?
     let pendingChapterJump: ReadiumChapterJump?
+    let diagnosticPageTurnRequest: ReadiumDiagnosticPageTurnRequest?
     let highlights: [Highlight]
     let onLocationChange: (ReadiumLocation) -> Void
     let onChapterPageChange: (ReadiumChapterPageState?) -> Void
@@ -55,6 +71,7 @@ struct ReadiumReaderContainer: View {
     let onCenterTap: () -> Void
     let onHighlightSelection: (String, String) -> Void
     let onPublicationReady: (Publication?) -> Void
+    let onDiagnosticPageTurnResult: (ReadiumDiagnosticPageTurnResult) -> Void
 
     @StateObject private var loader = ReadiumReaderLoader()
     @StateObject private var bridge = ReadiumNavigatorBridge()
@@ -138,6 +155,10 @@ struct ReadiumReaderContainer: View {
             onPublicationReady(nil)
             await loader.open(epubURL: epubURL, initialProgress: initialProgress)
             onPublicationReady(loader.publication)
+        }
+        .onChange(of: diagnosticPageTurnRequest) { _, request in
+            guard let request else { return }
+            performDiagnosticPageTurn(direction: request.direction)
         }
     }
 
@@ -292,6 +313,23 @@ struct ReadiumReaderContainer: View {
         }
     }
 
+    private func performDiagnosticPageTurn(direction: Int) {
+        onPageTurn(direction)
+        guard let request = diagnosticPageTurnRequest else { return }
+        Task { @MainActor in
+            let moved: Bool
+            if direction < 0 {
+                moved = await bridge.goBackwardAsync(animated: false)
+            } else {
+                moved = await bridge.goForwardAsync(animated: false)
+            }
+            if !moved {
+                onPageTurn(0)
+            }
+            onDiagnosticPageTurnResult(ReadiumDiagnosticPageTurnResult(requestID: request.id, moved: moved))
+        }
+    }
+
 }
 
 @MainActor
@@ -309,6 +347,16 @@ final class ReadiumNavigatorBridge: ObservableObject {
     func goBackward(animated: Bool) {
         guard let navigator else { return }
         Task { _ = await navigator.goBackward(options: NavigatorGoOptions(animated: animated)) }
+    }
+
+    func goForwardAsync(animated: Bool) async -> Bool {
+        guard let navigator else { return false }
+        return await navigator.goForward(options: NavigatorGoOptions(animated: animated))
+    }
+
+    func goBackwardAsync(animated: Bool) async -> Bool {
+        guard let navigator else { return false }
+        return await navigator.goBackward(options: NavigatorGoOptions(animated: animated))
     }
 
     @discardableResult

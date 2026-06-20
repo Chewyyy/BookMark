@@ -1,5 +1,4 @@
 import Foundation
-import UIKit
 
 struct Book: Identifiable, Codable, Hashable {
     var id: String
@@ -14,17 +13,6 @@ struct Book: Identifiable, Codable, Hashable {
     var fileName: String?
     var contentFingerprint: String?
     var totalLocations: Int?
-    /// Word count per spine item, in spine order. Populated at import time
-    /// by `EPUBWordCounter`. Used by the reader to convert a Readium locator
-    /// (chapter index + progression within chapter) into an absolute word
-    /// offset for device-independent reading-speed stats.
-    var wordCountsPerSpine: [Int]?
-    /// Sum of `wordCountsPerSpine`. Cached separately so widgets and stats
-    /// surfaces don't need the array materialized to use the headline number.
-    var totalWords: Int?
-    /// Per-layout pagination snapshots keyed by reader settings. These let the
-    /// reader show a stable whole-book "Page X of Y" immediately on reopen.
-    var paginationCache: [PaginationKey: PaginatedSettings]?
 
     init(
         id: String = UUID().uuidString,
@@ -38,10 +26,7 @@ struct Book: Identifiable, Codable, Hashable {
         fileBookmark: Data? = nil,
         fileName: String? = nil,
         contentFingerprint: String? = nil,
-        totalLocations: Int? = nil,
-        wordCountsPerSpine: [Int]? = nil,
-        totalWords: Int? = nil,
-        paginationCache: [PaginationKey: PaginatedSettings]? = nil
+        totalLocations: Int? = nil
     ) {
         self.id = id
         self.title = title
@@ -55,82 +40,6 @@ struct Book: Identifiable, Codable, Hashable {
         self.fileName = fileName
         self.contentFingerprint = contentFingerprint
         self.totalLocations = totalLocations
-        self.wordCountsPerSpine = wordCountsPerSpine
-        self.totalWords = totalWords
-        self.paginationCache = paginationCache
-    }
-}
-
-struct PaginationKey: Codable, Hashable {
-    var font: ReaderFont
-    var fontSize: Int
-    var bold: Bool
-    var lineHeight: Double
-    var margins: LayoutMargin
-    var justify: Bool
-    var deviceClass: String
-
-    static var defaultLibraryKey: PaginationKey {
-        PaginationKey(
-            font: .original,
-            fontSize: 100,
-            bold: false,
-            lineHeight: 1.6,
-            margins: .normal,
-            justify: false,
-            deviceClass: UIDevice.current.userInterfaceIdiom == .pad ? "pad" : "phone"
-        )
-    }
-}
-
-struct PaginatedSettings: Codable, Hashable {
-    var pagesPerChapter: [Int]
-    var chapterPageOffsets: [Int]
-    var totalPages: Int
-    var progress: Double
-    var computedAt: Date
-    var measuredChapterIndex: Int
-    var wordsPerViewportPage: Double
-    var measuredChapterIndexes: [Int]?
-
-    init(
-        pagesPerChapter: [Int],
-        progress: Double,
-        computedAt: Date = Date(),
-        measuredChapterIndex: Int,
-        wordsPerViewportPage: Double,
-        measuredChapterIndexes: [Int]? = nil
-    ) {
-        self.pagesPerChapter = pagesPerChapter.map { max(1, $0) }
-        self.chapterPageOffsets = Self.offsets(for: self.pagesPerChapter)
-        self.totalPages = max(1, self.pagesPerChapter.reduce(0, +))
-        self.progress = max(0, min(1, progress))
-        self.computedAt = computedAt
-        self.measuredChapterIndex = measuredChapterIndex
-        self.wordsPerViewportPage = wordsPerViewportPage
-        self.measuredChapterIndexes = measuredChapterIndexes?.sorted()
-    }
-
-    private static func offsets(for pagesPerChapter: [Int]) -> [Int] {
-        var offsets: [Int] = []
-        offsets.reserveCapacity(pagesPerChapter.count)
-        var runningTotal = 0
-        for pages in pagesPerChapter {
-            offsets.append(runningTotal)
-            runningTotal += max(1, pages)
-        }
-        return offsets
-    }
-}
-
-struct LibraryPaginationStatus: Equatable {
-    var bookTitle: String
-    var measuredChapters: Int
-    var totalChapters: Int
-
-    var text: String {
-        guard totalChapters > 0 else { return "Paginating library" }
-        return "Paginating \(bookTitle) \(measuredChapters)/\(totalChapters)"
     }
 }
 
@@ -143,10 +52,6 @@ struct ReadingSession: Identifiable, Codable, Hashable {
     var secs: Int
     var pages: Int?
     var publisherPages: Int?
-    /// Device-independent count of words read in this session. Derived from
-    /// the book's per-spine word counts and Readium's locator (resource index
-    /// + progression). Foundation of WPM and standardized-page stats.
-    var wordsRead: Int?
     var progressDelta: Double?
     var manual: Bool
 
@@ -159,7 +64,6 @@ struct ReadingSession: Identifiable, Codable, Hashable {
         secs: Int,
         pages: Int? = nil,
         publisherPages: Int? = nil,
-        wordsRead: Int? = nil,
         progressDelta: Double? = nil,
         manual: Bool = false
     ) {
@@ -171,7 +75,6 @@ struct ReadingSession: Identifiable, Codable, Hashable {
         self.secs = secs
         self.pages = pages
         self.publisherPages = publisherPages
-        self.wordsRead = wordsRead
         self.progressDelta = progressDelta
         self.manual = manual
     }
@@ -287,25 +190,6 @@ enum PageAnimation: String, Codable, CaseIterable, Hashable {
     case slide, fade, rigid, curl, none
 }
 
-/// How the bottom status bar's "Page X of Y" should be calculated.
-/// Lets the user A/B compare Readium's display modes against the new
-/// viewport-aware whole-book estimate.
-enum PageCountMode: String, Codable, CaseIterable, Hashable {
-    /// Readium content positions. ~1024 chars each, stable across devices,
-    /// stable across font/spread changes. "Page 142 of 1333"
-    case positions
-    /// Viewport-aware page count for the current chapter. Changes with
-    /// font size, margins, spread. "Page 5 of 12 in chapter"
-    case viewportChapter
-    /// Apple Books–style whole-book total estimated from the current
-    /// chapter's word density × visible page span. Dynamically recomputes
-    /// when font size / spread / device changes. "Page 42 of 287"
-    case viewportBook
-    /// Stable whole-book page count derived once from a viewport chapter
-    /// measurement, then held until real pagination settings change.
-    case paginatedBook
-}
-
 struct ReaderSettings: Codable, Hashable {
     var theme: ReaderTheme = .paper
     var font: ReaderFont = .original
@@ -318,12 +202,11 @@ struct ReaderSettings: Codable, Hashable {
     var swipe: Bool = true
     var keepAwake: Bool = true
     var brightness: Int = 100
-    var pageCountMode: PageCountMode = .positions
 
     init() {}
 
     private enum CodingKeys: String, CodingKey {
-        case theme, font, fontSize, bold, lineHeight, margins, justify, pageAnim, swipe, keepAwake, brightness, pageCountMode
+        case theme, font, fontSize, bold, lineHeight, margins, justify, pageAnim, swipe, keepAwake, brightness
     }
 
     init(from decoder: Decoder) throws {
@@ -338,7 +221,6 @@ struct ReaderSettings: Codable, Hashable {
         pageAnim = try c.decodeIfPresent(PageAnimation.self, forKey: .pageAnim) ?? .slide
         swipe = try c.decodeIfPresent(Bool.self, forKey: .swipe) ?? true
         keepAwake = try c.decodeIfPresent(Bool.self, forKey: .keepAwake) ?? true
-        pageCountMode = try c.decodeIfPresent(PageCountMode.self, forKey: .pageCountMode) ?? .positions
         brightness = try c.decodeIfPresent(Int.self, forKey: .brightness) ?? 100
     }
 }

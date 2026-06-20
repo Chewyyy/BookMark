@@ -19,6 +19,7 @@ struct ReaderSettingsSheet: View {
                 themeGroup
                 spacingGroup
                 layoutGroup
+                pageCountGroup
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 28)
@@ -199,6 +200,47 @@ struct ReaderSettingsSheet: View {
         }
     }
 
+    private var pageCountGroup: some View {
+        SettingsGroup(title: "Page Count Mode") {
+            VStack(spacing: 8) {
+                ForEach(PageCountMode.allCases, id: \.self) { mode in
+                    pageCountButton(mode)
+                }
+            }
+            Text("Positions uses Readium's content-derived page count (~1024 chars each). Viewport Chapter uses Readium's dynamic per-chapter pagination. Paginated Book holds one viewport-derived book total until layout settings change.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .padding(.top, 4)
+        }
+    }
+
+    private func pageCountButton(_ mode: PageCountMode) -> some View {
+        let isSelected = model.settings.pageCountMode == mode
+        return Button {
+            model.settings.pageCountMode = mode
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(isSelected ? model.theme.accentColor : model.theme.foregroundColor.opacity(0.5))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(mode.label)
+                        .font(.system(size: 13, weight: .heavy))
+                    Text(mode.subtitle)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .foregroundStyle(isSelected ? model.theme.accentColor : model.theme.foregroundColor)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(isSelected ? model.theme.accentColor.opacity(0.12) : Color.gray.opacity(0.12))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+    }
+
     private func pageTurnButton(_ animation: PageAnimation) -> some View {
         let isSelected = model.settings.pageAnim == animation
         return Button {
@@ -221,6 +263,26 @@ struct ReaderSettingsSheet: View {
             .clipShape(RoundedRectangle(cornerRadius: 14))
         }
         .buttonStyle(.plain)
+    }
+}
+
+private extension PageCountMode {
+    var label: String {
+        switch self {
+        case .positions: return "Positions"
+        case .viewportChapter: return "Viewport Chapter"
+        case .viewportBook: return "Viewport Book"
+        case .paginatedBook: return "Paginated Book"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .positions: return "Page X of 1333 · stable"
+        case .viewportChapter: return "Page X of Y in chapter · dynamic"
+        case .viewportBook: return "Page X of Y total · Apple Books–style"
+        case .paginatedBook: return "Stable Page X of Y · offset based"
+        }
     }
 }
 

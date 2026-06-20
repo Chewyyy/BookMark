@@ -117,11 +117,6 @@ enum EPUBImporter {
                 author: pkg?.author,
                 coverData: pkg?.coverData()
             )
-            // Relinked EPUB has different content; re-count words so stats stay
-            // accurate. Existing sessions stay attached to the same book id.
-            if let pkg, !pkg.spine.isEmpty {
-                countWordsInBackground(bookId: id, package: pkg, into: store)
-            }
             return .success
         } catch {
             print("EPUB relink failed: \(error)")
@@ -154,53 +149,6 @@ enum EPUBImporter {
             fileName: dest.lastPathComponent,
             contentFingerprint: fingerprint
         )
-        let addResult = store.addOrAttachBook(book)
-        let outcome: ImportOutcome = addResult.added ? .added : .relinked
-
-        // Word count parsing can take several hundred ms on textbooks, so we
-        // hand the package off to a detached task and update the book once the
-        // count is ready. The user sees the book in their library immediately;
-        // word count, WPM, etc. fill in seconds later.
-        if let pkg, !pkg.spine.isEmpty {
-            countWordsInBackground(bookId: addResult.bookId, package: pkg, into: store)
-        }
-        return outcome
-    }
-
-    /// Off-main-actor word count + main-actor store update. Safe to call
-    /// from import, rescan, or first-launch backfill.
-    @MainActor
-    static func countWordsInBackground(bookId: String, package: EPUBPackage, into store: Store) {
-        Task.detached(priority: .utility) {
-            let result = EPUBWordCounter.count(in: package)
-            await MainActor.run {
-                store.updateWordCounts(
-                    bookId: bookId,
-                    perSpine: result.perSpine,
-                    total: result.total
-                )
-            }
-        }
-    }
-
-    /// One-time backfill for books imported before word counting existed.
-    /// Iterates the library, opens each EPUB lacking `totalWords`, kicks off
-    /// the same background parse used at import. Cheap to call repeatedly —
-    /// books with counts already present are skipped, so it's safe to wire
-    /// into app launch even after every book has been counted.
-    @MainActor
-    static func backfillWordCounts(into store: Store) {
-        let needsCount = store.books.filter { $0.totalWords == nil }
-        guard !needsCount.isEmpty else { return }
-        for book in needsCount {
-            guard let fileName = book.fileName else { continue }
-            let url = Store.epubsDirectory().appendingPathComponent(fileName)
-            guard FileManager.default.fileExists(atPath: url.path),
-                  let data = try? Data(contentsOf: url),
-                  let pkg = EPUBPackage.open(data: data),
-                  !pkg.spine.isEmpty
-            else { continue }
-            countWordsInBackground(bookId: book.id, package: pkg, into: store)
-        }
+        return store.addBook(book) ? .added : .relinked
     }
 }

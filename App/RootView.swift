@@ -34,6 +34,8 @@ struct RootView: View {
                 }
                 .allowsHitTesting(false)
             }
+            LibraryPaginationQueueView(priorityBookID: readingBookId)
+                .environmentObject(store)
         }
         .fullScreenCover(item: Binding(
             get: { readingBookId.map { BookIDWrapper(id: $0) } },

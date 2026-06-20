@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 import WebKit
 import ReadiumShared
 
@@ -16,34 +15,16 @@ struct ReaderView: View {
     @State private var showSettings = false
     @State private var showContents = false
     @State private var showSearch = false
-    @State private var showPageAudit = false
     @State private var contentsInitialTab: ReaderContentsSheet.ContentTab = .chapters
     @State private var showReaderMenu = false
     @State private var pendingLocatorJSON: String?
     @State private var pendingChapterJump: ReadiumChapterJump?
-    @State private var diagnosticPageTurnRequest: ReadiumDiagnosticPageTurnRequest?
     @State private var returnLocatorJSON: String?
     @State private var readiumPublication: Publication?
-    @State private var pageAuditLog = ""
-    @State private var isPageAuditRunning = false
-    @State private var pageAuditTask: Task<Void, Never>?
-    @State private var diagnosticPageTurnResult: ReadiumDiagnosticPageTurnResult?
-    @State private var hiddenPaginationRunning = false
-    @State private var hiddenPaginationNavigatorReady = false
-    @State private var hiddenPaginationPendingChapterJump: ReadiumChapterJump?
-    @State private var hiddenPaginationTargetChapter: Int?
-    @State private var hiddenPaginationTimeoutTask: Task<Void, Never>?
-    @State private var hiddenPaginationPagesPerChapter: [Int] = []
-    @State private var hiddenPaginationMeasuredIndexes: Set<Int> = []
-    @State private var hiddenPaginationChaptersToMeasure: [Int] = []
-    @State private var hiddenPaginationMeasuredThisRun = 0
-    @State private var hiddenPaginationLines: [String] = []
-    @State private var automaticHiddenPaginationAttemptedKeys: Set<PaginationKey> = []
     @State private var sessionStartedAt = Date()
     @State private var sessionStartProgress: Double?
     @State private var sessionStartPage: Int?
     @State private var sessionStartPublisherPage: Int?
-    @State private var sessionStartWordOffset: Int?
     @State private var sessionSaved = false
     @State private var elapsed = 0
     @State private var timer: Timer?
@@ -51,57 +32,6 @@ struct ReaderView: View {
     @State private var finishPromptTarget: Book?
 
     private var book: Book? { store.books.first { $0.id == bookId } }
-
-    // MARK: - Reading speed estimates
-    //
-    // These derive from the per-book / per-library WPM in ReadingSpeedEstimator.
-    // Returns nil whenever there's not yet enough data to make an honest
-    // estimate, so chrome surfaces can show "Calculating..." instead of
-    // hallucinating a number from the 240 WPM default.
-
-    private var estimatedWPM: Double? {
-        ReadingSpeedEstimator.wpm(forBookID: bookId, sessions: store.sessions)
-    }
-
-    private var minutesLeftInChapter: Int? {
-        guard let book,
-              let counts = book.wordCountsPerSpine,
-              let idx = model.readiumResourceIndex,
-              counts.indices.contains(idx),
-              let pos = model.readiumChapterPosition,
-              let total = model.readiumChapterPositionTotal,
-              total > 0,
-              let wpm = estimatedWPM
-        else { return nil }
-        let progression = Double(pos) / Double(total)
-        return ReadingSpeedEstimator.minutesRemainingInChapter(
-            wordsInChapter: counts[idx],
-            progressionInChapter: progression,
-            wpm: wpm
-        )
-    }
-
-    private var minutesLeftInBook: Int? {
-        guard let book,
-              let offset = model.currentWordOffset,
-              let wpm = estimatedWPM
-        else { return nil }
-        return ReadingSpeedEstimator.minutesRemainingInBook(
-            book: book,
-            currentWordOffset: offset,
-            wpm: wpm
-        )
-    }
-
-    private var chapterTimeRemainingText: String {
-        guard let mins = minutesLeftInChapter else { return "Calculating…" }
-        return "~\(Fmt.duration(mins * 60)) left in this chapter"
-    }
-
-    private var bookTimeRemainingText: String {
-        guard let mins = minutesLeftInBook else { return "Calculating…" }
-        return "~\(Fmt.duration(mins * 60)) left in book"
-    }
 
     var body: some View {
         ZStack {
@@ -115,7 +45,6 @@ struct ReaderView: View {
                     initialProgress: store.progress[bookId]?.pct ?? 0,
                     pendingLocatorJSON: pendingLocatorJSON,
                     pendingChapterJump: pendingChapterJump,
-                    diagnosticPageTurnRequest: diagnosticPageTurnRequest,
                     highlights: store.highlights[bookId] ?? [],
                     onLocationChange: { location in
                         model.updateReadiumLocation(location)
@@ -131,7 +60,6 @@ struct ReaderView: View {
                     },
                     onChapterPageChange: { state in
                         model.updateReadiumChapterPageState(state)
-                        requestAutomaticHiddenPaginationIfNeeded()
                     },
                     onPageTurn: { direction in
                         model.expectReadiumPageTurn(direction)
@@ -144,10 +72,6 @@ struct ReaderView: View {
                     },
                     onPublicationReady: { publication in
                         readiumPublication = publication
-                        requestAutomaticHiddenPaginationIfNeeded()
-                    },
-                    onDiagnosticPageTurnResult: { result in
-                        diagnosticPageTurnResult = result
                     }
                 )
                 .ignoresSafeArea()
@@ -155,35 +79,6 @@ struct ReaderView: View {
                 errorView(err)
             } else {
                 loadingView
-            }
-
-            if hiddenPaginationRunning, let epubURL = model.epubURL {
-                ReadiumReaderContainer(
-                    epubURL: epubURL,
-                    settings: model.settings,
-                    initialProgress: 0,
-                    pendingLocatorJSON: nil,
-                    pendingChapterJump: hiddenPaginationPendingChapterJump,
-                    diagnosticPageTurnRequest: nil,
-                    highlights: [],
-                    onLocationChange: { _ in },
-                    onChapterPageChange: handleHiddenPaginationPageState,
-                    onPageTurn: { _ in },
-                    onCenterTap: {},
-                    onHighlightSelection: { _, _ in },
-                    onPublicationReady: { publication in
-                        guard publication != nil else { return }
-                        hiddenPaginationNavigatorReady = true
-                        if hiddenPaginationRunning, hiddenPaginationTargetChapter == nil {
-                            advanceHiddenPagination()
-                        }
-                    },
-                    onDiagnosticPageTurnResult: { _ in }
-                )
-                .ignoresSafeArea()
-                .opacity(0)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
             }
 
             // Brightness overlay
@@ -216,7 +111,6 @@ struct ReaderView: View {
             sessionStartProgress = nil
             sessionStartPage = nil
             sessionStartPublisherPage = nil
-            sessionStartWordOffset = nil
             sessionSaved = false
             elapsed = 0
             startTimer()
@@ -225,30 +119,11 @@ struct ReaderView: View {
         .onDisappear {
             timer?.invalidate()
             UIApplication.shared.isIdleTimerDisabled = false
-            stopHiddenPaginationForReaderExit()
             saveSession()
             store.endLiveReadingSession(bookId: bookId)
         }
         .onChange(of: model.settings.keepAwake) { _, v in
             UIApplication.shared.isIdleTimerDisabled = v
-        }
-        .onChange(of: showSettings) { _, isPresented in
-            if !isPresented { requestAutomaticHiddenPaginationIfNeeded() }
-        }
-        .onChange(of: showContents) { _, isPresented in
-            if !isPresented { requestAutomaticHiddenPaginationIfNeeded() }
-        }
-        .onChange(of: showSearch) { _, isPresented in
-            if !isPresented { requestAutomaticHiddenPaginationIfNeeded() }
-        }
-        .onChange(of: model.paginationKey) { _, key in
-            model.hydratePaginatedSettings(book?.paginationCache?[key], for: key)
-            requestAutomaticHiddenPaginationIfNeeded()
-        }
-        .onChange(of: model.paginatedSettings) { _, settings in
-            guard let settings else { return }
-            store.updatePaginationCache(bookId: bookId, key: model.paginationKey, settings: settings)
-            requestAutomaticHiddenPaginationIfNeeded()
         }
         .sheet(isPresented: $showSettings) {
             ReaderSettingsSheet(model: model)
@@ -281,22 +156,6 @@ struct ReaderView: View {
                 .presentationDetents([.medium, .large])
             }
         }
-        #if DEBUG
-        .sheet(isPresented: $showPageAudit, onDismiss: handlePageAuditDismiss) {
-            ReaderPageAuditSheet(
-                model: model,
-                log: pageAuditLog,
-                isRunning: isPageAuditRunning,
-                onRunFromCurrent: { startPageAudit(fromStart: false) },
-                onRunFromStart: { startPageAudit(fromStart: true) },
-                onBuildExactPagination: startExactPaginationBuild,
-                onBuildHiddenExactPagination: { startHiddenExactPaginationBuild() },
-                onStop: stopPageAudit,
-                onClear: { pageAuditLog = "" }
-            )
-            .presentationDetents([.large])
-        }
-        #endif
         .sheet(item: $finishPromptTarget) { bk in
             FinishDateSheet(book: bk) { }
                 .presentationDetents([.medium])
@@ -350,19 +209,12 @@ struct ReaderView: View {
                 }
                 .buttonStyle(.plain)
             }
-            VStack(spacing: 1) {
-                Text(model.chapterPagesLeftText)
-                    .font(.system(size: 15, weight: .heavy))
-                    .foregroundStyle(model.theme.foregroundColor)
-                    .lineLimit(1)
-                    .monospacedDigit()
-                Text(chapterTimeRemainingText)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(model.theme.foregroundColor.opacity(0.55))
-                    .lineLimit(1)
-                    .monospacedDigit()
-            }
-            .frame(maxWidth: .infinity)
+            Text(model.chapterPagesLeftText)
+                .font(.system(size: 15, weight: .heavy))
+                .foregroundStyle(model.theme.foregroundColor)
+                .lineLimit(1)
+                .monospacedDigit()
+                .frame(maxWidth: .infinity)
             Text(Fmt.timer(elapsed))
                 .font(.system(size: 14, weight: .bold))
                 .foregroundStyle(model.theme.foregroundColor)
@@ -390,19 +242,12 @@ struct ReaderView: View {
             ZStack(alignment: .bottomTrailing) {
                 VStack(spacing: 16) {
                     progressBar
-                    VStack(spacing: 2) {
-                        Text(model.statusBottom)
-                            .font(.system(size: 19, weight: .heavy))
-                            .foregroundStyle(model.theme.foregroundColor)
-                            .monospacedDigit()
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.7)
-                        Text(bookTimeRemainingText)
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(model.theme.foregroundColor.opacity(0.55))
-                            .lineLimit(1)
-                            .monospacedDigit()
-                    }
+                    Text(model.statusBottom)
+                        .font(.system(size: 19, weight: .heavy))
+                        .foregroundStyle(model.theme.foregroundColor)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
                 }
                 .padding(.horizontal, 56)
                 .padding(.bottom, -8)
@@ -488,13 +333,6 @@ struct ReaderView: View {
                 showReaderMenu = false
                 showSearch = true
             }
-            #if DEBUG
-            Divider().opacity(0.35)
-            readerMenuButton(icon: "stethoscope", title: "Page Audit", isPlaceholder: model.epubURL == nil) {
-                showReaderMenu = false
-                showPageAudit = true
-            }
-            #endif
             // Placeholder: add navigation/book metadata actions here if needed later.
             readerMenuButton(icon: "ellipsis", title: "More", isPlaceholder: true) { }
         }
@@ -640,412 +478,6 @@ struct ReaderView: View {
         returnLocatorJSON = nil
     }
 
-    private var pageAuditMetadataLines: [String] {
-        let started = ISO8601DateFormatter().string(from: Date())
-        let measuredText: String = {
-            let count = model.paginatedMeasuredChapterCount
-            let total = model.paginationChapterCount
-            guard total > 0 else { return "" }
-            return "\(count)/\(total)"
-        }()
-        return [
-            "startedAt\t\(started)",
-            "bookId\t\(bookId)",
-            "bookTitle\t\(book?.title ?? "")",
-            "pageCountMode\t\(model.settings.pageCountMode.rawValue)",
-            "font\t\(model.settings.font.rawValue)",
-            "fontSize\t\(model.settings.fontSize)",
-            "bold\t\(model.settings.bold)",
-            "lineHeight\t\(model.settings.lineHeight)",
-            "margins\t\(model.settings.margins.rawValue)",
-            "justify\t\(model.settings.justify)",
-            "paginationCacheHit\t\(model.paginationCacheHit)",
-            "paginationStatus\t\(model.paginatedSettingsIsComplete ? "exact" : (model.paginatedSettings == nil ? "none" : "estimated"))",
-            "paginationMeasured\t\(measuredText)",
-            "paginationTotal\t\(model.paginatedSettings?.totalPages ?? 0)",
-            "paginationCacheEntries\t\(book?.paginationCache?.count ?? 0)"
-        ]
-    }
-
-    private func startPageAudit(fromStart: Bool) {
-        guard model.epubURL != nil, !isPageAuditRunning else { return }
-        pageAuditTask?.cancel()
-        isPageAuditRunning = true
-
-        var lines: [String] = ["BookMark Page Audit"] + pageAuditMetadataLines + ["", model.paginationAuditHeader]
-        pageAuditLog = lines.joined(separator: "\n")
-
-        pageAuditTask = Task { @MainActor in
-            if fromStart {
-                pendingChapterJump = ReadiumChapterJump(chapterIndex: 0)
-                await waitForAuditStartChapter()
-            }
-
-            lines.append(model.paginationAuditLine(step: 0, event: fromStart ? "startFromFirstChapter" : "startFromCurrent"))
-            pageAuditLog = lines.joined(separator: "\n")
-
-            let maxSteps = min(max(model.paginatedSettings?.totalPages ?? model.displayPageTotal, 1) + 8, 20_000)
-
-            for step in 1...maxSteps {
-                if Task.isCancelled { break }
-                let beforePage = model.paginatedBookCurrentPage
-                let beforeLocator = model.readiumLocatorJSON
-                let beforeProgress = model.overallProgress
-                var didMove = false
-
-                for attempt in 1...3 {
-                    if Task.isCancelled { break }
-                    let request = ReadiumDiagnosticPageTurnRequest(direction: 1)
-                    diagnosticPageTurnRequest = request
-                    didMove = await waitForAuditTurn(
-                        request: request,
-                        beforeLocator: beforeLocator,
-                        beforeProgress: beforeProgress
-                    )
-                    if didMove { break }
-
-                    lines.append(model.paginationAuditLine(step: step, event: "turnIgnored", note: "attempt:\(attempt)"))
-                    pageAuditLog = lines.joined(separator: "\n")
-                    try? await Task.sleep(nanoseconds: 180_000_000)
-                }
-
-                if !didMove {
-                    lines.append(model.paginationAuditLine(step: step, event: "stopped", note: "noMovementAfter3Attempts"))
-                    break
-                }
-
-                let afterPage = model.paginatedBookCurrentPage
-                var notes: [String] = []
-                if let beforePage, let afterPage {
-                    let delta = afterPage - beforePage
-                    if delta == 0 {
-                        notes.append("repeat")
-                    } else if delta != 1 {
-                        notes.append("skip:\(delta)")
-                    }
-                } else {
-                    notes.append("missingPage")
-                }
-
-                lines.append(model.paginationAuditLine(step: step, event: "forward", note: notes.joined(separator: ",")))
-                pageAuditLog = lines.joined(separator: "\n")
-
-                if let afterPage, let total = model.paginatedSettings?.totalPages, afterPage >= total {
-                    lines.append(model.paginationAuditLine(step: step, event: "finished", note: "reachedGeneratedTotal"))
-                    break
-                }
-            }
-
-            lines.append("")
-            let generatedTotalText = model.paginatedSettings.map { String($0.totalPages) } ?? ""
-            let finalPageText = model.paginatedBookCurrentPage.map(String.init) ?? ""
-            lines.append("summary\tgeneratedTotal=\(generatedTotalText)\tfinalPage=\(finalPageText)\tprogress=\(Int((model.overallProgress * 100).rounded()))%")
-            pageAuditLog = lines.joined(separator: "\n")
-            isPageAuditRunning = false
-            pageAuditTask = nil
-        }
-    }
-
-    private func startExactPaginationBuild() {
-        guard model.epubURL != nil, !isPageAuditRunning else { return }
-        let chapterCount = model.paginationChapterCount
-        guard chapterCount > 0 else { return }
-
-        pageAuditTask?.cancel()
-        isPageAuditRunning = true
-
-        var lines: [String] = ["BookMark Exact Pagination Build"] + pageAuditMetadataLines + [
-            "chapterCount\t\(chapterCount)",
-            "",
-            "chapterIndex\tstatus\tpages\tnote"
-        ]
-        pageAuditLog = lines.joined(separator: "\n")
-
-        let restoreLocator = model.readiumLocatorJSON
-        pageAuditTask = Task { @MainActor in
-            var pagesPerChapter = model.paginatedSettings?.pagesPerChapter ?? Array(repeating: 1, count: chapterCount)
-            if pagesPerChapter.count != chapterCount {
-                pagesPerChapter = Array(repeating: 1, count: chapterCount)
-            }
-            var measuredIndexes = Set(model.paginatedSettings?.measuredChapterIndexes ?? [])
-            if measuredIndexes.isEmpty,
-               let measuredChapterIndex = model.paginatedSettings?.measuredChapterIndex,
-               measuredChapterIndex >= 0 {
-                measuredIndexes.insert(measuredChapterIndex)
-            }
-            measuredIndexes = measuredIndexes.filter { $0 >= 0 && $0 < chapterCount }
-            let chaptersToMeasure: [Int] = {
-                let missing = (0..<chapterCount).filter { !measuredIndexes.contains($0) }
-                return missing.isEmpty ? Array(0..<chapterCount) : missing
-            }()
-            let previouslyMeasured = measuredIndexes.count
-            var measuredThisRun = 0
-
-            lines.append("resumeFromMeasured\t\(previouslyMeasured)")
-            lines.append("chaptersToMeasure\t\(chaptersToMeasure.count)")
-            pageAuditLog = lines.joined(separator: "\n")
-
-            for chapterIndex in chaptersToMeasure {
-                if Task.isCancelled { break }
-                pendingChapterJump = ReadiumChapterJump(chapterIndex: chapterIndex)
-                let state = await waitForChapterPageState(chapterIndex)
-                if let state {
-                    pagesPerChapter[chapterIndex] = max(1, state.totalPages)
-                    measuredIndexes.insert(chapterIndex)
-                    measuredThisRun += 1
-                    lines.append("\(chapterIndex)\tmeasured\t\(state.totalPages)\t")
-                } else {
-                    let fallback = max(1, pagesPerChapter[chapterIndex])
-                    pagesPerChapter[chapterIndex] = fallback
-                    measuredIndexes.insert(chapterIndex)
-                    measuredThisRun += 1
-                    lines.append("\(chapterIndex)\tinferred\t\(fallback)\tviewportTimeoutFallback")
-                }
-                pageAuditLog = lines.joined(separator: "\n")
-            }
-
-            if !Task.isCancelled, !measuredIndexes.isEmpty {
-                let measuredTotal = measuredIndexes.count
-                let progress = Double(measuredTotal) / Double(max(1, chapterCount))
-                model.applyExactPaginatedSettings(
-                    pagesPerChapter: pagesPerChapter,
-                    progress: progress,
-                    measuredChapterIndexes: measuredIndexes
-                )
-                let total = model.paginatedSettings?.totalPages ?? pagesPerChapter.reduce(0, +)
-                lines.append("")
-                lines.append("summary\tstatus=\(measuredTotal == chapterCount ? "complete" : "partial")\tmeasured=\(measuredTotal)/\(chapterCount)\tnewThisRun=\(measuredThisRun)\ttotal=\(total)\tcacheKey=\(model.paginationKey.font.rawValue)-\(model.paginationKey.fontSize)")
-                pageAuditLog = lines.joined(separator: "\n")
-            }
-
-            if let restoreLocator {
-                pendingLocatorJSON = restoreLocator
-            }
-            isPageAuditRunning = false
-            pageAuditTask = nil
-        }
-    }
-
-    private func requestAutomaticHiddenPaginationIfNeeded() {
-        guard model.settings.pageCountMode == .paginatedBook,
-              model.epubURL != nil,
-              model.readiumChapterPageState != nil,
-              !showSettings,
-              !showContents,
-              !showSearch,
-              !isPageAuditRunning,
-              !hiddenPaginationRunning,
-              let settings = model.paginatedSettings
-        else { return }
-
-        let chapterCount = model.paginationChapterCount
-        guard chapterCount > 0 else { return }
-
-        let measuredCount = Set(settings.measuredChapterIndexes ?? []).filter { $0 >= 0 && $0 < chapterCount }.count
-        guard measuredCount < chapterCount else { return }
-
-        let key = model.paginationKey
-        guard !automaticHiddenPaginationAttemptedKeys.contains(key) else { return }
-        automaticHiddenPaginationAttemptedKeys.insert(key)
-        startHiddenExactPaginationBuild(manual: false)
-    }
-
-    private func startHiddenExactPaginationBuild(manual: Bool = true) {
-        guard model.epubURL != nil, !isPageAuditRunning, !hiddenPaginationRunning else { return }
-        let chapterCount = model.paginationChapterCount
-        guard chapterCount > 0 else { return }
-
-        pageAuditTask?.cancel()
-        hiddenPaginationTimeoutTask?.cancel()
-        isPageAuditRunning = true
-        hiddenPaginationRunning = true
-        hiddenPaginationNavigatorReady = false
-
-        var pagesPerChapter = model.paginatedSettings?.pagesPerChapter ?? Array(repeating: 1, count: chapterCount)
-        if pagesPerChapter.count != chapterCount {
-            pagesPerChapter = Array(repeating: 1, count: chapterCount)
-        }
-        var measuredIndexes = Set(model.paginatedSettings?.measuredChapterIndexes ?? [])
-        if measuredIndexes.isEmpty,
-           let measuredChapterIndex = model.paginatedSettings?.measuredChapterIndex,
-           measuredChapterIndex >= 0 {
-            measuredIndexes.insert(measuredChapterIndex)
-        }
-        measuredIndexes = measuredIndexes.filter { $0 >= 0 && $0 < chapterCount }
-        let missing = (0..<chapterCount).filter { !measuredIndexes.contains($0) }
-        let chaptersToMeasure = missing.isEmpty ? Array(0..<chapterCount) : missing
-
-        hiddenPaginationPagesPerChapter = pagesPerChapter
-        hiddenPaginationMeasuredIndexes = measuredIndexes
-        hiddenPaginationChaptersToMeasure = chaptersToMeasure
-        hiddenPaginationMeasuredThisRun = 0
-        hiddenPaginationLines = ["BookMark Hidden Exact Pagination Build"] + pageAuditMetadataLines + [
-            "trigger\t\(manual ? "manual" : "automatic")",
-            "chapterCount\t\(chapterCount)",
-            "resumeFromMeasured\t\(measuredIndexes.count)",
-            "chaptersToMeasure\t\(chaptersToMeasure.count)",
-            "",
-            "chapterIndex\tstatus\tpages\tnote"
-        ]
-        pageAuditLog = hiddenPaginationLines.joined(separator: "\n")
-    }
-
-    private func advanceHiddenPagination() {
-        hiddenPaginationTimeoutTask?.cancel()
-        guard hiddenPaginationRunning else { return }
-        guard hiddenPaginationNavigatorReady else { return }
-
-        guard let chapterIndex = hiddenPaginationChaptersToMeasure.first else {
-            finishHiddenPagination(cancelled: false)
-            return
-        }
-
-        hiddenPaginationTargetChapter = chapterIndex
-        hiddenPaginationPendingChapterJump = ReadiumChapterJump(chapterIndex: chapterIndex)
-        hiddenPaginationTimeoutTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 5_000_000_000)
-            guard hiddenPaginationRunning,
-                  hiddenPaginationTargetChapter == chapterIndex,
-                  hiddenPaginationChaptersToMeasure.first == chapterIndex
-            else { return }
-
-            let fallback = hiddenPaginationPagesPerChapter.indices.contains(chapterIndex)
-                ? max(1, hiddenPaginationPagesPerChapter[chapterIndex])
-                : 1
-            if hiddenPaginationPagesPerChapter.indices.contains(chapterIndex) {
-                hiddenPaginationPagesPerChapter[chapterIndex] = fallback
-            }
-            hiddenPaginationMeasuredIndexes.insert(chapterIndex)
-            hiddenPaginationMeasuredThisRun += 1
-            hiddenPaginationLines.append("\(chapterIndex)\tinferred\t\(fallback)\tviewportTimeoutFallback")
-            pageAuditLog = hiddenPaginationLines.joined(separator: "\n")
-            hiddenPaginationChaptersToMeasure.removeFirst()
-            advanceHiddenPagination()
-        }
-    }
-
-    private func handleHiddenPaginationPageState(_ state: ReadiumChapterPageState?) {
-        guard hiddenPaginationRunning,
-              let state,
-              let target = hiddenPaginationTargetChapter,
-              state.resourceIndex == target,
-              hiddenPaginationChaptersToMeasure.first == target
-        else { return }
-
-        hiddenPaginationTimeoutTask?.cancel()
-        if hiddenPaginationPagesPerChapter.indices.contains(target) {
-            hiddenPaginationPagesPerChapter[target] = max(1, state.totalPages)
-        }
-        hiddenPaginationMeasuredIndexes.insert(target)
-        hiddenPaginationMeasuredThisRun += 1
-        hiddenPaginationLines.append("\(target)\tmeasured\t\(state.totalPages)\thidden")
-        pageAuditLog = hiddenPaginationLines.joined(separator: "\n")
-        hiddenPaginationChaptersToMeasure.removeFirst()
-        advanceHiddenPagination()
-    }
-
-    private func finishHiddenPagination(cancelled: Bool) {
-        hiddenPaginationTimeoutTask?.cancel()
-        hiddenPaginationTimeoutTask = nil
-
-        if !hiddenPaginationMeasuredIndexes.isEmpty, !hiddenPaginationPagesPerChapter.isEmpty {
-            let chapterCount = hiddenPaginationPagesPerChapter.count
-            let measuredTotal = hiddenPaginationMeasuredIndexes.count
-            let progress = Double(measuredTotal) / Double(max(1, chapterCount))
-            model.applyExactPaginatedSettings(
-                pagesPerChapter: hiddenPaginationPagesPerChapter,
-                progress: progress,
-                measuredChapterIndexes: hiddenPaginationMeasuredIndexes
-            )
-            if let settings = model.paginatedSettings {
-                store.updatePaginationCache(bookId: bookId, key: model.paginationKey, settings: settings)
-            }
-            let total = model.paginatedSettings?.totalPages ?? hiddenPaginationPagesPerChapter.reduce(0, +)
-            hiddenPaginationLines.append("")
-            hiddenPaginationLines.append("summary\tstatus=\(cancelled ? "cancelled" : (measuredTotal == chapterCount ? "complete" : "partial"))\tmeasured=\(measuredTotal)/\(chapterCount)\tnewThisRun=\(hiddenPaginationMeasuredThisRun)\ttotal=\(total)\tcacheKey=\(model.paginationKey.font.rawValue)-\(model.paginationKey.fontSize)")
-            pageAuditLog = hiddenPaginationLines.joined(separator: "\n")
-        }
-
-        hiddenPaginationRunning = false
-        hiddenPaginationNavigatorReady = false
-        hiddenPaginationPendingChapterJump = nil
-        hiddenPaginationTargetChapter = nil
-        hiddenPaginationChaptersToMeasure = []
-        hiddenPaginationMeasuredThisRun = 0
-        isPageAuditRunning = false
-        pageAuditTask = nil
-    }
-
-    private func waitForAuditStartChapter() async {
-        let deadline = Date().addingTimeInterval(4)
-        repeat {
-            try? await Task.sleep(nanoseconds: 80_000_000)
-            if model.readiumResourceIndex == 0 && model.readiumChapterPageState?.resourceIndex == 0 {
-                try? await Task.sleep(nanoseconds: 160_000_000)
-                return
-            }
-        } while Date() < deadline && !Task.isCancelled
-    }
-
-    private func waitForChapterPageState(_ chapterIndex: Int) async -> ReadiumChapterPageState? {
-        let deadline = Date().addingTimeInterval(5)
-        repeat {
-            try? await Task.sleep(nanoseconds: 100_000_000)
-            if let state = model.readiumChapterPageState, state.resourceIndex == chapterIndex {
-                try? await Task.sleep(nanoseconds: 120_000_000)
-                return model.readiumChapterPageState?.resourceIndex == chapterIndex ? model.readiumChapterPageState : state
-            }
-        } while Date() < deadline && !Task.isCancelled
-        return nil
-    }
-
-    private func waitForAuditTurn(
-        request: ReadiumDiagnosticPageTurnRequest,
-        beforeLocator: String?,
-        beforeProgress: Double
-    ) async -> Bool {
-        let deadline = Date().addingTimeInterval(2)
-        var navigatorAcceptedTurn: Bool?
-        repeat {
-            try? await Task.sleep(nanoseconds: 80_000_000)
-            if diagnosticPageTurnResult?.requestID == request.id {
-                navigatorAcceptedTurn = diagnosticPageTurnResult?.moved ?? false
-            }
-            if model.readiumLocatorJSON != beforeLocator || abs(model.overallProgress - beforeProgress) > 0.00001 {
-                try? await Task.sleep(nanoseconds: 120_000_000)
-                return true
-            }
-            if navigatorAcceptedTurn == false {
-                return false
-            }
-        } while Date() < deadline && !Task.isCancelled
-        return false
-    }
-
-    private func stopPageAudit() {
-        pageAuditTask?.cancel()
-        pageAuditTask = nil
-        if hiddenPaginationRunning {
-            finishHiddenPagination(cancelled: true)
-            return
-        }
-        isPageAuditRunning = false
-    }
-
-    private func stopHiddenPaginationForReaderExit() {
-        guard hiddenPaginationRunning else { return }
-        pageAuditTask?.cancel()
-        pageAuditTask = nil
-        finishHiddenPagination(cancelled: true)
-    }
-
-    private func handlePageAuditDismiss() {
-        if hiddenPaginationRunning {
-            return
-        }
-        stopPageAudit()
-    }
-
     private func startTimer() {
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
@@ -1092,17 +524,6 @@ struct ReaderView: View {
             let delta = endPage - startPage
             return delta > 0 ? delta : nil
         }()
-        // Device-independent words-read delta. Nil for sessions on books that
-        // haven't been word-counted yet (legacy library awaiting backfill, or
-        // a corrupt EPUB that didn't parse).
-        let wordsRead: Int? = {
-            guard model.epubURL != nil,
-                  let start = sessionStartWordOffset,
-                  let end = model.currentWordOffset
-            else { return nil }
-            let delta = end - start
-            return delta > 0 ? delta : nil
-        }()
         let session = ReadingSession(
             bookId: book.id,
             bookTitle: book.title,
@@ -1111,7 +532,6 @@ struct ReaderView: View {
             secs: elapsed,
             pages: pagesRead > 0 ? pagesRead : nil,
             publisherPages: publisherPagesRead,
-            wordsRead: wordsRead,
             progressDelta: progressDelta > 0 ? progressDelta : nil,
             manual: false
         )
@@ -1128,11 +548,6 @@ struct ReaderView: View {
         }
         if sessionStartPublisherPage == nil {
             sessionStartPublisherPage = model.readiumPublisherPage
-        }
-        // Capture the word offset on the first valid Readium location, so
-        // saveSession() can compute a device-independent words-read delta.
-        if sessionStartWordOffset == nil, let offset = model.currentWordOffset {
-            sessionStartWordOffset = offset
         }
     }
 
@@ -1161,18 +576,10 @@ struct ReaderView: View {
 
         model.settings = store.readerSettings
         model.readiumProgress = store.progress[book.id]?.pct ?? 0
-        // Seed the word-count lookup so currentWordOffset works from the
-        // first Readium location callback. Stays nil for books awaiting
-        // backfill — in that case wordsRead simply won't be recorded for
-        // this session, and the rest of the reader behaves normally.
-        model.wordCountsPerSpine = book.wordCountsPerSpine
-        model.totalWords = book.totalWords
         model.resetReadiumSessionMetrics()
-        model.hydratePaginatedSettings(book.paginationCache?[model.paginationKey])
         sessionStartProgress = model.readiumProgress
         sessionStartPage = nil
         sessionStartPublisherPage = nil
-        sessionStartWordOffset = nil
         model.epubURL = url
         store.beginLiveReadingSession(
             bookId: book.id,
@@ -1184,160 +591,6 @@ struct ReaderView: View {
             model.package = pkg
             model.chapterPageCounts = Array(repeating: 0, count: pkg.spine.count)
         }
-    }
-}
-
-private struct ReaderPageAuditSheet: View {
-    @ObservedObject var model: ReaderModel
-    let log: String
-    let isRunning: Bool
-    let onRunFromCurrent: () -> Void
-    let onRunFromStart: () -> Void
-    let onBuildExactPagination: () -> Void
-    let onBuildHiddenExactPagination: () -> Void
-    let onStop: () -> Void
-    let onClear: () -> Void
-
-    @State private var didCopy = false
-
-    var body: some View {
-        VStack(spacing: 0) {
-            Grabber()
-            header
-            controls
-            Divider().opacity(0.4)
-            logView
-        }
-        .background(model.theme.backgroundColor)
-        .preferredColorScheme(model.theme.isDark ? .dark : .light)
-    }
-
-    private var header: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Page Audit")
-                    .font(.system(size: 18, weight: .heavy))
-                    .foregroundStyle(model.theme.foregroundColor)
-                Text(statusText)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(model.theme.secondaryForeground)
-                    .lineLimit(2)
-            }
-            Spacer()
-            if isRunning {
-                ProgressView()
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 12)
-    }
-
-    private var controls: some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 8) {
-                Button {
-                    onRunFromCurrent()
-                } label: {
-                    Label("Run Forward", systemImage: "play.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .disabled(isRunning)
-
-                Button {
-                    onRunFromStart()
-                } label: {
-                    Label("From Start", systemImage: "backward.end.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .disabled(isRunning)
-            }
-
-            Button {
-                onBuildExactPagination()
-            } label: {
-                Label("Build Exact Pagination", systemImage: "ruler")
-                    .frame(maxWidth: .infinity)
-            }
-            .disabled(isRunning || model.epubURL == nil)
-
-            Button {
-                onBuildHiddenExactPagination()
-            } label: {
-                Label("Build Hidden Exact", systemImage: "eye.slash")
-                    .frame(maxWidth: .infinity)
-            }
-            .disabled(isRunning || model.epubURL == nil)
-
-            HStack(spacing: 8) {
-                Button(role: .destructive) {
-                    onStop()
-                } label: {
-                    Label("Stop", systemImage: "stop.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .disabled(!isRunning)
-
-                Button {
-                    UIPasteboard.general.string = log
-                    didCopy = true
-                } label: {
-                    Label(didCopy ? "Copied" : "Copy", systemImage: didCopy ? "checkmark" : "doc.on.doc")
-                        .frame(maxWidth: .infinity)
-                }
-                .disabled(log.isEmpty)
-
-                ShareLink(item: log) {
-                    Label("Share", systemImage: "square.and.arrow.up")
-                        .frame(maxWidth: .infinity)
-                }
-                .disabled(log.isEmpty)
-
-                Button {
-                    didCopy = false
-                    onClear()
-                } label: {
-                    Label("Clear", systemImage: "trash")
-                        .frame(maxWidth: .infinity)
-                }
-                .disabled(isRunning || log.isEmpty)
-            }
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .padding(.horizontal, 16)
-        .padding(.bottom, 12)
-    }
-
-    private var logView: some View {
-        ScrollView {
-            Text(log.isEmpty ? "Run the audit to collect page-order data." : log)
-                .font(.system(size: 11, weight: .regular, design: .monospaced))
-                .foregroundStyle(log.isEmpty ? model.theme.secondaryForeground : model.theme.foregroundColor)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(16)
-        }
-    }
-
-    private var statusText: String {
-        if isRunning {
-            if log.hasPrefix("BookMark Hidden Exact Pagination Build") {
-                return "Measuring chapters with an invisible foreground navigator."
-            }
-            if log.hasPrefix("BookMark Exact Pagination Build") {
-                return "Walking chapters and capturing exact viewport page totals."
-            }
-            return "Forcing no-animation page turns and recording observed page order."
-        }
-        if let total = model.paginatedSettings?.totalPages {
-            let measured = model.paginatedMeasuredChapterCount
-            let chapters = model.paginationChapterCount
-            let status = model.paginatedSettingsIsComplete ? "Exact" : "Estimated"
-            let totalText = model.paginatedBookTotalText(total)
-            let coverage = chapters > 0 ? " · \(measured)/\(chapters) chapters" : ""
-            return "\(status) total: \(totalText). Current: \(model.paginatedBookCurrentPage.map(String.init) ?? "unknown")\(coverage)."
-        }
-        return "Open a paginated EPUB page first so the generated total exists."
     }
 }
 
@@ -1403,7 +656,6 @@ final class ReaderModel: ObservableObject {
     @Published var readiumChapterPosition: Int?
     @Published var readiumChapterPositionTotal: Int?
     @Published var readiumChapterPageState: ReadiumChapterPageState?
-    @Published private(set) var paginatedSettings: PaginatedSettings?
     @Published var readiumChapterTitle: String?
     @Published var readiumPublisherPage: Int?
     @Published var readiumPublisherPageLabel: String?
@@ -1411,21 +663,7 @@ final class ReaderModel: ObservableObject {
     @Published private var readiumDisplayIsReady = false
     @Published private(set) var readiumSessionPagesRead = 0
     @Published private var displayPageOverride: Int?
-    @Published private var paginatedPageOverride: Int?
-    @Published private(set) var paginatedSettingsLoadedFromCache = false
     private var pendingReadiumPageTurnDirection: Int?
-    private var pendingPaginatedPageTurnBase: Int?
-    private var paginatedSettingsKey: PaginationKey?
-
-    // MARK: Word-count tracking (Option 2)
-    //
-    // Hydrated from the open Book's `wordCountsPerSpine` so `currentWordOffset`
-    // can convert a Readium locator into an absolute "words read so far" value
-    // — the basis for cross-device WPM and standardized pages. Stays nil for
-    // books imported before word counting existed (until backfill catches up).
-    var wordCountsPerSpine: [Int]?
-    var totalWords: Int?
-
     @Published var error: String?
     @Published var pendingInitialPage: InitialPage?
     @Published var suppressFirstPageUntilLastJump = false
@@ -1474,30 +712,7 @@ final class ReaderModel: ObservableObject {
             if let label = readiumPublisherPageLabel, let total = readiumPublisherPageTotal, total > 0 {
                 return "Page \(label) of \(total) · \(percent)%"
             }
-            // Viewport-aware chapter mode — pulls from Readium's
-            // NavigatorViewport, refreshes with font/spread changes.
-            if settings.pageCountMode == .viewportChapter,
-               let state = readiumChapterPageState {
-                return "Page \(state.currentPage) of \(state.totalPages) in chapter · \(percent)%"
-            }
-            if settings.pageCountMode == .paginatedBook,
-               let page = paginatedBookCurrentPage,
-               let total = paginatedSettings?.totalPages {
-                return "Page \(page) of \(paginatedBookTotalText(total)) · \(percent)%"
-            }
-            // Whole-book viewport estimate — refreshes whenever density
-            // changes. Falls back to position mode if word counts or
-            // chapter page state aren't ready yet (briefly at book open).
-            if settings.pageCountMode == .viewportBook,
-               let page = viewportBookCurrentPage,
-               let total = viewportBookPageTotal {
-                return "Page \(page) of \(total) · \(percent)%"
-            }
-            // Visible page = Readium's raw position. The +1-per-swipe override
-            // (`displayPageOverride`) still ticks in the background and is read
-            // by `displayPage` for sessions/bookmarks — flipping the visible
-            // bar back to the swipe counter is a one-liner here.
-            return "Page \(rawDisplayPage) of \(displayPageTotal) · \(percent)%"
+            return "Page \(displayPage) of \(displayPageTotal) · \(percent)%"
         }
         return "Page \(estimatedBookPage) of \(estimatedBookPages) · \(Int((overallProgress * 100).rounded()))%"
     }
@@ -1508,11 +723,7 @@ final class ReaderModel: ObservableObject {
             if let label = readiumPublisherPageLabel {
                 return "Page \(label)"
             }
-            if settings.pageCountMode == .paginatedBook,
-               let page = paginatedBookCurrentPage {
-                return "Page \(page)"
-            }
-            return "Page \(rawDisplayPage)"
+            return "Page \(displayPage)"
         }
         return "Page \(estimatedBookPage)"
     }
@@ -1521,15 +732,11 @@ final class ReaderModel: ObservableObject {
         max(1, readiumTotalPositions ?? estimatedBookPages)
     }
 
-    /// Read by session tracking (`saveSession`), bookmarks, and anything else
-    /// that needs a stable swipe-driven counter. The visible status bar uses
-    /// `rawDisplayPage` directly so the override doesn't smooth out Readium's
-    /// natural per-swipe page jumps on iPad.
     var displayPage: Int {
         displayPageOverride ?? rawDisplayPage
     }
 
-    var rawDisplayPage: Int {
+    private var rawDisplayPage: Int {
         let fallback = Int(ceil(overallProgress * Double(displayPageTotal)))
         return boundedDisplayPage(readiumPosition ?? fallback)
     }
@@ -1572,22 +779,14 @@ final class ReaderModel: ObservableObject {
     }
 
     func expectReadiumPageTurn(_ direction: Int) {
-        if direction == 0 {
-            pendingReadiumPageTurnDirection = nil
-            pendingPaginatedPageTurnBase = nil
-            return
-        }
-        pendingReadiumPageTurnDirection = direction > 0 ? 1 : -1
-        pendingPaginatedPageTurnBase = paginatedBookCurrentPage
+        pendingReadiumPageTurnDirection = direction == 0 ? nil : (direction > 0 ? 1 : -1)
     }
 
     func resetReadiumSessionMetrics() {
         readiumSessionPagesRead = 0
         pendingReadiumPageTurnDirection = nil
-        pendingPaginatedPageTurnBase = nil
         readiumDisplayIsReady = false
         displayPageOverride = nil
-        paginatedPageOverride = nil
         readiumPosition = nil
         readiumTotalPositions = nil
         readiumLocatorJSON = nil
@@ -1596,21 +795,10 @@ final class ReaderModel: ObservableObject {
         readiumChapterPosition = nil
         readiumChapterPositionTotal = nil
         readiumChapterPageState = nil
-        paginatedSettings = nil
-        paginatedSettingsKey = nil
-        paginatedSettingsLoadedFromCache = false
         readiumChapterTitle = nil
         readiumPublisherPage = nil
         readiumPublisherPageLabel = nil
         readiumPublisherPageTotal = nil
-    }
-
-    func invalidatePaginatedSettings() {
-        paginatedSettings = nil
-        paginatedSettingsKey = nil
-        paginatedSettingsLoadedFromCache = false
-        paginatedPageOverride = nil
-        pendingPaginatedPageTurnBase = nil
     }
 
     func updateReadiumChapterPageState(_ state: ReadiumChapterPageState?) {
@@ -1619,16 +807,11 @@ final class ReaderModel: ObservableObject {
         if let idx = state?.resourceIndex {
             chapterIndex = idx
         }
-        refreshPaginatedSettingsIfNeeded(from: state)
-        if paginatedPageOverride == nil {
-            paginatedPageOverride = rawPaginatedBookCurrentPage
-        }
     }
 
     func updateReadiumLocation(_ location: ReadiumLocation) {
         let oldProgress = readiumProgress
         let oldPage = displayPageOverride ?? rawDisplayPage
-        let oldPaginatedPage = pendingPaginatedPageTurnBase ?? paginatedBookCurrentPage
         let oldLocator = readiumLocatorJSON
         let expectedDirection = pendingReadiumPageTurnDirection
 
@@ -1657,336 +840,24 @@ final class ReaderModel: ObservableObject {
             if displayPageOverride == nil {
                 displayPageOverride = estimated
             }
-            if paginatedPageOverride == nil {
-                paginatedPageOverride = rawPaginatedBookCurrentPage
-            }
             return
         }
 
         pendingReadiumPageTurnDirection = nil
-        pendingPaginatedPageTurnBase = nil
         if let expectedDirection {
             displayPageOverride = boundedDisplayPage(oldPage + expectedDirection)
-            if let oldPaginatedPage {
-                paginatedPageOverride = boundedPaginatedBookPage(oldPaginatedPage + expectedDirection)
-            }
             readiumSessionPagesRead = max(0, readiumSessionPagesRead + expectedDirection)
         } else if readiumProgress > oldProgress {
             displayPageOverride = boundedDisplayPage(max(estimated, oldPage + 1))
-            paginatedPageOverride = nil
         } else if readiumProgress < oldProgress {
             displayPageOverride = boundedDisplayPage(min(estimated, oldPage - 1))
-            paginatedPageOverride = nil
         } else {
             displayPageOverride = estimated
-            paginatedPageOverride = nil
         }
     }
 
     private func boundedDisplayPage(_ page: Int) -> Int {
         max(1, min(displayPageTotal, page))
-    }
-
-    /// Convert the current Readium location into an absolute word offset
-    /// across the whole book. Returns nil if the book hasn't been word-counted
-    /// yet (legacy books awaiting backfill, or the parser failed). Uses
-    /// `resourceIndex` for the chapter and `chapterPosition / chapterPositionTotal`
-    /// as the within-chapter progression, so the result is content-based and
-    /// stays the same on iPhone, iPad, and at any font size.
-    var currentWordOffset: Int? {
-        guard let counts = wordCountsPerSpine,
-              let idx = readiumResourceIndex,
-              counts.indices.contains(idx)
-        else { return nil }
-        let before = counts.prefix(idx).reduce(0, +)
-        let inChapter: Int = {
-            guard let pos = readiumChapterPosition,
-                  let total = readiumChapterPositionTotal,
-                  total > 0
-            else { return 0 }
-            let progression = max(0.0, min(1.0, Double(pos) / Double(total)))
-            return Int((Double(counts[idx]) * progression).rounded())
-        }()
-        return before + inChapter
-    }
-
-    // MARK: Viewport-based whole-book pagination (Apple Books-style)
-    //
-    // Combines word counts (content-derived) with Readium's viewport-aware
-    // chapter page count to produce a dynamic whole-book total that updates
-    // whenever font / spread / device changes. The estimate uses the CURRENT
-    // chapter's density, so chapters with very different content shapes
-    // (image-heavy front matter, dense academic prose) can shift the total
-    // when you cross into them. This matches Apple Books' early behavior.
-
-    /// Words that fit on one visible page at the current settings, inferred
-    /// from the current chapter. Nil when there's no chapter page state yet
-    /// or the book hasn't been word-counted.
-    var wordsPerViewportPage: Double? {
-        guard let counts = wordCountsPerSpine,
-              let idx = readiumResourceIndex,
-              counts.indices.contains(idx),
-              let state = readiumChapterPageState,
-              state.totalPages > 0
-        else { return nil }
-        let chapterWords = counts[idx]
-        guard chapterWords > 0 else { return nil }
-        return Double(chapterWords) / Double(state.totalPages)
-    }
-
-    /// Total visible pages across the whole book at current settings.
-    /// Refreshes any time the viewport-aware density changes.
-    var viewportBookPageTotal: Int? {
-        guard let total = totalWords, total > 0,
-              let density = wordsPerViewportPage, density > 0
-        else { return nil }
-        return max(1, Int(ceil(Double(total) / density)))
-    }
-
-    /// Current visible page across the whole book — i.e., where the user
-    /// is in the projected total.
-    var viewportBookCurrentPage: Int? {
-        guard let total = viewportBookPageTotal,
-              let offset = currentWordOffset,
-              let density = wordsPerViewportPage, density > 0
-        else { return nil }
-        let page = Int((Double(offset) / density).rounded())
-        return max(1, min(total, page))
-    }
-
-    // MARK: Stable single-density pagination
-
-    var paginationKey: PaginationKey {
-        PaginationKey(
-            font: settings.font,
-            fontSize: settings.fontSize,
-            bold: settings.bold,
-            lineHeight: settings.lineHeight,
-            margins: settings.margins,
-            justify: settings.justify,
-            deviceClass: UIDevice.current.userInterfaceIdiom == .pad ? "pad" : "phone"
-        )
-    }
-
-    var paginatedBookCurrentPage: Int? {
-        guard paginatedSettingsKey == paginationKey else { return nil }
-        return paginatedPageOverride ?? rawPaginatedBookCurrentPage
-    }
-
-    var paginationCacheHit: Bool {
-        paginatedSettingsLoadedFromCache && paginatedSettingsKey == paginationKey && paginatedSettings != nil
-    }
-
-    var paginatedSettingsIsComplete: Bool {
-        guard let settings = paginatedSettings,
-              paginatedSettingsKey == paginationKey
-        else { return false }
-        let chapterCount = paginationChapterCount
-        guard chapterCount > 0 else { return settings.progress >= 1 }
-        return paginatedMeasuredChapterCount == chapterCount
-    }
-
-    var paginatedMeasuredChapterCount: Int {
-        guard let settings = paginatedSettings,
-              paginatedSettingsKey == paginationKey
-        else { return 0 }
-        let chapterCount = paginationChapterCount
-        guard chapterCount > 0 else { return settings.progress >= 1 ? 1 : 0 }
-        return Set(settings.measuredChapterIndexes ?? [])
-            .filter { $0 >= 0 && $0 < chapterCount }
-            .count
-    }
-
-    func paginatedBookTotalText(_ total: Int) -> String {
-        paginatedSettingsIsComplete ? "\(total)" : "~\(total)"
-    }
-
-    var paginationChapterCount: Int {
-        if let count = wordCountsPerSpine?.count, count > 0 { return count }
-        if let total = readiumResourceTotal, total > 0 { return total }
-        if let count = package?.spine.count, count > 0 { return count }
-        return 0
-    }
-
-    var paginationAuditHeader: String {
-        [
-            "step",
-            "event",
-            "note",
-            "globalPage",
-            "generatedTotal",
-            "rawGlobalPage",
-            "readiumDisplayPage",
-            "readiumDisplayTotal",
-            "resourceIndex",
-            "chapterViewportPage",
-            "chapterViewportTotal",
-            "chapterPosition",
-            "chapterPositionTotal",
-            "progressPercent",
-            "locatorHash"
-        ].joined(separator: "\t")
-    }
-
-    func paginationAuditLine(step: Int, event: String, note: String = "") -> String {
-        let locatorHash = readiumLocatorJSON.map { String(abs($0.hashValue), radix: 16) } ?? ""
-        let globalPageText = paginatedBookCurrentPage.map(String.init) ?? ""
-        let generatedTotalText = paginatedSettings.map { String($0.totalPages) } ?? ""
-        let rawGlobalPageText = rawPaginatedBookCurrentPage.map(String.init) ?? ""
-        let resourceIndexText = readiumResourceIndex.map(String.init) ?? ""
-        let chapterViewportPageText = readiumChapterPageState.map { String($0.currentPage) } ?? ""
-        let chapterViewportTotalText = readiumChapterPageState.map { String($0.totalPages) } ?? ""
-        let chapterPositionText = readiumChapterPosition.map(String.init) ?? ""
-        let chapterPositionTotalText = readiumChapterPositionTotal.map(String.init) ?? ""
-        let progressText = String(Int((overallProgress * 100).rounded()))
-        let fields: [String] = [
-            "\(step)",
-            event,
-            note,
-            globalPageText,
-            generatedTotalText,
-            rawGlobalPageText,
-            "\(rawDisplayPage)",
-            "\(displayPageTotal)",
-            resourceIndexText,
-            chapterViewportPageText,
-            chapterViewportTotalText,
-            chapterPositionText,
-            chapterPositionTotalText,
-            progressText,
-            locatorHash
-        ]
-        return fields.joined(separator: "\t")
-    }
-
-    private var rawPaginatedBookCurrentPage: Int? {
-        guard let settings = paginatedSettings,
-              paginatedSettingsKey == paginationKey,
-              let state = readiumChapterPageState,
-              settings.chapterPageOffsets.indices.contains(state.resourceIndex)
-        else { return nil }
-        let offset = settings.chapterPageOffsets[state.resourceIndex]
-        let page = offset + max(1, state.currentPage)
-        return max(1, min(settings.totalPages, page))
-    }
-
-    private func boundedPaginatedBookPage(_ page: Int) -> Int {
-        max(1, min(paginatedSettings?.totalPages ?? page, page))
-    }
-
-    func hydratePaginatedSettings(_ settings: PaginatedSettings?, for key: PaginationKey? = nil) {
-        let targetKey = key ?? paginationKey
-        paginatedSettingsKey = targetKey
-        if let settings, isUsableCachedPaginatedSettings(settings, for: targetKey) {
-            paginatedSettings = settings
-            paginatedSettingsLoadedFromCache = true
-        } else {
-            paginatedSettings = nil
-            paginatedSettingsLoadedFromCache = false
-        }
-        paginatedPageOverride = rawPaginatedBookCurrentPage
-        pendingPaginatedPageTurnBase = nil
-    }
-
-    func applyExactPaginatedSettings(
-        pagesPerChapter: [Int],
-        progress: Double,
-        measuredChapterIndexes: Set<Int>
-    ) {
-        guard !pagesPerChapter.isEmpty else { return }
-        let totalPages = max(1, pagesPerChapter.reduce(0) { $0 + max(1, $1) })
-        let density: Double = {
-            guard let totalWords, totalWords > 0 else { return wordsPerViewportPage ?? 0 }
-            return Double(totalWords) / Double(totalPages)
-        }()
-        paginatedSettingsKey = paginationKey
-        paginatedSettings = PaginatedSettings(
-            pagesPerChapter: pagesPerChapter,
-            progress: progress,
-            measuredChapterIndex: -1,
-            wordsPerViewportPage: density,
-            measuredChapterIndexes: Array(measuredChapterIndexes)
-        )
-        paginatedSettingsLoadedFromCache = false
-        paginatedPageOverride = rawPaginatedBookCurrentPage
-        pendingPaginatedPageTurnBase = nil
-    }
-
-    private func refreshPaginatedSettingsIfNeeded(from state: ReadiumChapterPageState?) {
-        let key = paginationKey
-        if paginatedSettingsKey != key {
-            paginatedSettings = nil
-            paginatedSettingsKey = key
-            paginatedSettingsLoadedFromCache = false
-            paginatedPageOverride = nil
-        }
-        guard paginatedSettings == nil,
-              let state,
-              let next = makePaginatedSettings(from: state)
-        else { return }
-        paginatedSettings = next
-        paginatedSettingsLoadedFromCache = false
-        paginatedPageOverride = rawPaginatedBookCurrentPage
-    }
-
-    private func makePaginatedSettings(from state: ReadiumChapterPageState) -> PaginatedSettings? {
-        guard let counts = wordCountsPerSpine,
-              counts.indices.contains(state.resourceIndex),
-              state.totalPages > 0
-        else { return nil }
-
-        let measuredChapterWords = counts[state.resourceIndex]
-        guard canAnchorPagination(chapterWords: measuredChapterWords, chapterPages: state.totalPages) else { return nil }
-
-        let density = Double(measuredChapterWords) / Double(state.totalPages)
-        guard density >= minimumReasonableWordsPerPage(for: paginationKey) else { return nil }
-
-        var pagesPerChapter = counts.map { words in
-            max(1, Int(ceil(Double(max(0, words)) / density)))
-        }
-        pagesPerChapter[state.resourceIndex] = max(1, state.totalPages)
-
-        return PaginatedSettings(
-            pagesPerChapter: pagesPerChapter,
-            progress: counts.isEmpty ? 0 : 1.0 / Double(counts.count),
-            measuredChapterIndex: state.resourceIndex,
-            wordsPerViewportPage: density,
-            measuredChapterIndexes: [state.resourceIndex]
-        )
-    }
-
-    private func isUsableCachedPaginatedSettings(_ settings: PaginatedSettings, for key: PaginationKey) -> Bool {
-        guard settings.totalPages > 0 else { return false }
-
-        if let totalWords, totalWords > 0 {
-            let maximumPages = max(1, Int(ceil(Double(totalWords) / minimumReasonableWordsPerPage(for: key))))
-            guard settings.totalPages <= maximumPages else { return false }
-        }
-
-        if let counts = wordCountsPerSpine {
-            guard settings.pagesPerChapter.count == counts.count,
-                  settings.chapterPageOffsets.count == counts.count
-            else { return false }
-
-            let measuredIndexes = Set(settings.measuredChapterIndexes ?? [])
-                .filter { $0 >= 0 && $0 < counts.count }
-            let isCompleteExactCache = (0..<counts.count).allSatisfy { measuredIndexes.contains($0) }
-            if isCompleteExactCache || !measuredIndexes.isEmpty {
-                return true
-            }
-        }
-
-        guard settings.wordsPerViewportPage >= minimumReasonableWordsPerPage(for: key) else { return false }
-
-        return true
-    }
-
-    private func canAnchorPagination(chapterWords: Int, chapterPages: Int) -> Bool {
-        chapterWords >= 1_200 && chapterPages >= 4
-    }
-
-    private func minimumReasonableWordsPerPage(for key: PaginationKey) -> Double {
-        max(45, 120 * (100.0 / Double(max(60, key.fontSize))))
     }
 
     func go(to index: Int, page: Int? = nil, animated: Bool = true) {
