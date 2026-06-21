@@ -22,7 +22,6 @@ final class PageTurnAnimator {
 
     private(set) var isAnimating: Bool = false
 
-    private static let stripCount = 28
     // Wait long enough after navigation for WKWebView to paint the new page.
     private static let renderSettleNanoseconds: UInt64 = 90_000_000
     // Frame budget for hand-driven animations (~60fps).
@@ -212,12 +211,15 @@ final class PageTurnAnimator {
         let actuallyCommit = commit && navigationSucceeded
 
         if actuallyCommit {
-            runManualProgress(from: current.lastProgress, to: 1.0, verticalFrom: current.lastVerticalPull, touchY: current.lastTouchY, duration: 0.28) { [weak self] in
+            let remaining = max(0, 1 - current.lastProgress)
+            let duration = TimeInterval(max(0.18, min(0.38, 0.12 + remaining * 0.34)))
+            runManualProgress(from: current.lastProgress, to: 1.0, verticalFrom: current.lastVerticalPull, touchY: current.lastTouchY, duration: duration) { [weak self] in
                 self?.teardownInteractive()
             }
         } else {
             // Animate back to flat. If we already moved Readium forward, revert it.
-            runManualProgress(from: current.lastProgress, to: 0.0, verticalFrom: current.lastVerticalPull, touchY: current.lastTouchY, duration: 0.26) { [weak self] in
+            let duration = TimeInterval(max(0.16, min(0.30, 0.10 + current.lastProgress * 0.24)))
+            runManualProgress(from: current.lastProgress, to: 0.0, verticalFrom: current.lastVerticalPull, touchY: current.lastTouchY, duration: duration) { [weak self] in
                 guard let self else { return }
                 guard let s = self.session else { return }
                 if navigationSucceeded {
@@ -276,9 +278,10 @@ final class PageTurnAnimator {
         while true {
             let elapsed = CACurrentMediaTime() - start
             let t = min(1.0, elapsed / duration)
+            let eased = 1 - pow(1 - CGFloat(t), 2.35)
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            apply(progress: CGFloat(t),
+            apply(progress: eased,
                   direction: direction,
                   container: container,
                   strips: strips,
@@ -317,59 +320,34 @@ final class PageTurnAnimator {
         let containerSize = container.bounds.size
         guard containerSize.width > 0, containerSize.height > 0 else { return [] }
 
-        let count = Self.stripCount
-        let stripPtWidth = containerSize.width / CGFloat(count)
-        let stripPxWidth = CGFloat(cgImage.width) / CGFloat(count)
-        let imageW = CGFloat(cgImage.width)
-        let imageH = CGFloat(cgImage.height)
+        let forward = direction > 0
 
-        var layers: [CALayer] = []
-        layers.reserveCapacity(count)
-
-        // Apply a shared perspective via the container's sublayerTransform so
-        // every strip shares the same camera.
         var perspective = CATransform3DIdentity
         perspective.m34 = -1.0 / 1200.0
         container.layer.sublayerTransform = perspective
 
-        for i in 0..<count {
-            let rawX = CGFloat(i) * stripPxWidth
-            let cropRect = CGRect(
-                x: max(0, floor(rawX)),
-                y: 0,
-                width: min(imageW - floor(rawX), ceil(stripPxWidth + 1)),
-                height: imageH
-            )
-            guard cropRect.width > 0, let stripCG = cgImage.cropping(to: cropRect) else { continue }
+        let layer = CALayer()
+        layer.contents = cgImage
+        layer.contentsGravity = .resize
+        layer.magnificationFilter = .linear
+        layer.minificationFilter = .linear
+        layer.allowsEdgeAntialiasing = true
+        layer.masksToBounds = true
+        layer.isDoubleSided = false
+        layer.isOpaque = true
+        layer.shouldRasterize = true
+        layer.rasterizationScale = image.scale
+        layer.contentsScale = image.scale
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOpacity = 0
+        layer.shadowRadius = 18
+        layer.shadowOffset = .zero
+        layer.bounds = CGRect(x: 0, y: 0, width: containerSize.width, height: containerSize.height)
+        layer.anchorPoint = CGPoint(x: forward ? 0 : 1, y: 0.5)
+        layer.position = CGPoint(x: forward ? 0 : containerSize.width, y: containerSize.height / 2)
 
-            let layer = CALayer()
-            layer.contents = stripCG
-            layer.contentsGravity = .resize
-            layer.magnificationFilter = .linear
-            layer.minificationFilter = .linear
-            layer.allowsEdgeAntialiasing = true
-            layer.masksToBounds = true
-            layer.isDoubleSided = true
-            layer.isOpaque = true
-            layer.shouldRasterize = true
-            layer.rasterizationScale = image.scale
-            layer.contentsScale = image.scale
-            layer.shadowColor = UIColor.black.cgColor
-            layer.shadowOpacity = 0
-            layer.shadowRadius = 8
-            layer.shadowOffset = .zero
-
-            let stripBounds = CGRect(x: 0, y: 0, width: stripPtWidth + 4.0, height: containerSize.height)
-            layer.bounds = stripBounds
-            layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-            let posX = (CGFloat(i) + 0.5) * stripPtWidth
-            layer.position = CGPoint(x: posX, y: containerSize.height / 2)
-
-            container.layer.addSublayer(layer)
-            layers.append(layer)
-        }
-
-        return layers
+        container.layer.addSublayer(layer)
+        return [layer]
     }
 
     private func createCurlOverlays(in container: UIView, direction: Int) -> (shadow: CAGradientLayer, highlight: CAGradientLayer, under: CAGradientLayer) {
@@ -449,11 +427,29 @@ final class PageTurnAnimator {
         let width = containerSize.width
         let rawProgress = max(0, min(1, progress))
         let eased = rawProgress * rawProgress * (3 - 2 * rawProgress)
-        let pageTravel = width * (1.0 * eased)
         let edgeSign: CGFloat = forward ? -1 : 1
-        let maxIndex = CGFloat(max(count - 1, 1))
         let pull = max(-1, min(1, verticalPull))
         let cornerBias = (max(0, min(1, touchY)) - 0.5) * 2
+
+        if count == 1, let sheet = strips.first {
+            applySheetProgress(
+                progress: rawProgress,
+                eased: eased,
+                direction: direction,
+                sheet: sheet,
+                width: width,
+                height: height,
+                pull: pull,
+                cornerBias: cornerBias,
+                foldShadow: foldShadow,
+                foldHighlight: foldHighlight,
+                underShadow: underShadow
+            )
+            return
+        }
+
+        let pageTravel = width * (1.0 * eased)
+        let maxIndex = CGFloat(max(count - 1, 1))
 
         for i in 0..<count {
             // 0 at spine, 1 at the edge being dragged. The curl wave starts at
@@ -461,43 +457,41 @@ final class PageTurnAnimator {
             let edgeWeight: CGFloat = forward
                 ? CGFloat(i) / maxIndex
                 : CGFloat(count - 1 - i) / maxIndex
-            let wave = max(0, min(1, rawProgress * 1.22 - (1 - edgeWeight) * 0.46))
+            let wave = max(0, min(1, rawProgress * 1.34 - (1 - edgeWeight) * 0.58))
             let bend = wave * wave * (3 - 2 * wave)
-            let travel = pageTravel * (0.72 + 0.28 * edgeWeight)
-            let lag = width * 0.032 * bend * (1 - edgeWeight)
+            let curl = sin(.pi * bend)
+            let travel = pageTravel * (0.60 + 0.40 * edgeWeight)
+            let lag = width * 0.070 * bend * (1 - edgeWeight)
             let xTranslation = edgeSign * (travel - lag)
-            let fingerInfluence = bend * edgeWeight
-            let verticalWave = pull * height * 0.075 * fingerInfluence
-            let cornerLift = pull * cornerBias * height * 0.035 * fingerInfluence
-            let yLift = -sin(.pi * bend) * 4 * (0.35 + edgeWeight * 0.65) + verticalWave + cornerLift
-            let zLift = sin(.pi * bend) * 18 * (0.25 + edgeWeight * 0.75) + abs(pull) * 16 * fingerInfluence
-            let angle = edgeSign * (.pi * 0.18) * bend * (0.42 + edgeWeight * 0.58)
-            let twistAngle = pull * (.pi * 0.045) * fingerInfluence
-            let xScale = 1.0 - 0.10 * bend * edgeWeight
-            let yScale = 1.0 - 0.022 * bend * (0.45 + edgeWeight * 0.55)
+            let fingerInfluence = bend * pow(edgeWeight, 0.72)
+            let verticalWave = pull * height * 0.095 * fingerInfluence
+            let cornerLift = pull * cornerBias * height * 0.048 * fingerInfluence
+            let yLift = -curl * 8 * (0.28 + edgeWeight * 0.72) + verticalWave + cornerLift
+            let zLift = curl * width * 0.055 * (0.22 + edgeWeight * 0.78) + abs(pull) * width * 0.035 * fingerInfluence
+            let angle = edgeSign * (.pi * 0.34) * bend * (0.25 + edgeWeight * 0.75)
+            let twistAngle = pull * (.pi * 0.055) * fingerInfluence
 
             var transform = CATransform3DIdentity
             transform = CATransform3DTranslate(transform, xTranslation, yLift, zLift)
             transform = CATransform3DRotate(transform, angle, 0, 1, 0)
             transform = CATransform3DRotate(transform, twistAngle, 1, 0, 0)
-            transform = CATransform3DScale(transform, xScale, yScale, 1)
             strips[i].transform = transform
-            strips[i].zPosition = edgeWeight * 100 + bend * 40
-            strips[i].shadowOpacity = Float(0.10 * bend)
+            strips[i].zPosition = edgeWeight * 100 + bend * 52
+            strips[i].shadowOpacity = Float(0.12 * bend * (0.35 + edgeWeight * 0.65))
         }
 
         let foldX: CGFloat = forward
             ? width - pageTravel
             : pageTravel
-        let foldBandWidth = max(70, width * 0.18)
-        let shadowBandWidth = max(120, width * 0.28)
+        let foldBandWidth = max(46, width * (0.10 + 0.06 * sin(.pi * rawProgress)))
+        let shadowBandWidth = max(130, width * (0.24 + 0.10 * sin(.pi * rawProgress)))
         foldHighlight.frame = CGRect(
             x: foldX - foldBandWidth / 2,
             y: 0,
             width: foldBandWidth,
             height: height
         )
-        foldHighlight.opacity = Float(min(1.0, eased * 1.25))
+        foldHighlight.opacity = Float(min(1.0, (0.18 + sin(.pi * rawProgress) * 0.72) * min(1.0, rawProgress * 1.4)))
 
         foldShadow.frame = CGRect(
             x: foldX - shadowBandWidth / 2,
@@ -505,12 +499,72 @@ final class PageTurnAnimator {
             width: shadowBandWidth,
             height: height
         )
-        foldShadow.opacity = Float(eased * 0.72)
+        foldShadow.opacity = Float(min(0.86, (0.20 + sin(.pi * rawProgress) * 0.52) * min(1.0, rawProgress * 1.5)))
 
-        let underWidth = max(150, width * (0.24 + 0.16 * eased))
+        let underWidth = max(150, width * (0.22 + 0.22 * eased))
         let underX: CGFloat = forward ? foldX - underWidth : foldX
         underShadow.frame = CGRect(x: underX, y: 0, width: underWidth, height: height)
-        underShadow.opacity = Float(eased * 0.68)
+        underShadow.opacity = Float(min(0.78, 0.10 + eased * 0.66))
+    }
+
+    private func applySheetProgress(progress rawProgress: CGFloat,
+                                    eased: CGFloat,
+                                    direction: Int,
+                                    sheet: CALayer,
+                                    width: CGFloat,
+                                    height: CGFloat,
+                                    pull: CGFloat,
+                                    cornerBias: CGFloat,
+                                    foldShadow: CAGradientLayer,
+                                    foldHighlight: CAGradientLayer,
+                                    underShadow: CAGradientLayer) {
+        let forward = direction > 0
+        let edgeSign: CGFloat = forward ? -1 : 1
+        let lift = sin(.pi * rawProgress)
+        let edgeTravel = width * 0.94 * eased
+        let yPull = pull * height * 0.052 * lift
+        let cornerLift = pull * cornerBias * height * 0.028 * lift
+        let zLift = width * 0.13 * lift
+        let rotationY = edgeSign * (.pi * 0.46) * eased
+        let rotationX = pull * (.pi * 0.035) * lift
+        let rotationZ = -edgeSign * pull * (.pi * 0.010) * lift
+
+        var transform = CATransform3DIdentity
+        transform = CATransform3DTranslate(transform, edgeSign * edgeTravel, yPull + cornerLift, zLift)
+        transform = CATransform3DRotate(transform, rotationY, 0, 1, 0)
+        transform = CATransform3DRotate(transform, rotationX, 1, 0, 0)
+        transform = CATransform3DRotate(transform, rotationZ, 0, 0, 1)
+        sheet.transform = transform
+        sheet.zPosition = 100 + lift * 60
+        sheet.shadowOpacity = Float(0.14 * lift + 0.08 * eased)
+        sheet.shadowRadius = 16 + 12 * lift
+        sheet.shadowOffset = CGSize(width: edgeSign * -8 * lift, height: 2 + 6 * lift)
+
+        let foldX: CGFloat = forward
+            ? width - edgeTravel
+            : edgeTravel
+        let foldBandWidth = max(44, width * (0.085 + 0.035 * lift))
+        let shadowBandWidth = max(120, width * (0.22 + 0.08 * lift))
+        foldHighlight.frame = CGRect(
+            x: foldX - foldBandWidth / 2,
+            y: 0,
+            width: foldBandWidth,
+            height: height
+        )
+        foldHighlight.opacity = Float(min(1.0, 0.35 + lift * 0.65) * min(1.0, rawProgress * 1.6))
+
+        foldShadow.frame = CGRect(
+            x: foldX - shadowBandWidth / 2,
+            y: 0,
+            width: shadowBandWidth,
+            height: height
+        )
+        foldShadow.opacity = Float((0.28 + 0.42 * lift) * min(1.0, rawProgress * 1.4))
+
+        let underWidth = max(120, width * (0.18 + 0.18 * eased))
+        let underX: CGFloat = forward ? foldX - underWidth : foldX
+        underShadow.frame = CGRect(x: underX, y: 0, width: underWidth, height: height)
+        underShadow.opacity = Float(min(0.75, 0.18 + eased * 0.58))
     }
 
     private func runManualProgress(from start: CGFloat,

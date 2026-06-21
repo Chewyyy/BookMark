@@ -47,10 +47,28 @@ struct ReaderView: View {
     @State private var sessionSaved = false
     @State private var elapsed = 0
     @State private var timer: Timer?
+    @State private var goalMetAtSessionStart = false
+    @State private var goalCelebrationShown = false
+    @State private var showGoalCelebration = false
+    @State private var goalCelebrationTask: Task<Void, Never>?
     @State private var endPromptShown = false
     @State private var finishPromptTarget: Book?
 
     private var book: Book? { store.books.first { $0.id == bookId } }
+
+    private var dailyGoalSeconds: Int { max(1, store.goal.minutes) * 60 }
+
+    private var currentSessionDaySeconds: Int {
+        Calendar.current.isDate(sessionStartedAt, inSameDayAs: Date()) ? elapsed : 0
+    }
+
+    private var todaySecondsIncludingCurrentSession: Int {
+        store.todaySeconds() + currentSessionDaySeconds
+    }
+
+    private var readingGoalMet: Bool {
+        todaySecondsIncludingCurrentSession >= dailyGoalSeconds
+    }
 
     // MARK: - Reading speed estimates
     //
@@ -231,6 +249,12 @@ struct ReaderView: View {
                 hiddenPageIndicator
                     .transition(.opacity)
             }
+
+            if showGoalCelebration {
+                goalCelebrationBanner
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .zIndex(3)
+            }
         }
         .toolbar(.hidden, for: .navigationBar)
         .statusBar(hidden: !showChrome)
@@ -244,11 +268,17 @@ struct ReaderView: View {
             sessionStartWordOffset = nil
             sessionSaved = false
             elapsed = 0
+            goalMetAtSessionStart = readingGoalMet
+            goalCelebrationShown = readingGoalMet
+            showGoalCelebration = false
+            goalCelebrationTask?.cancel()
+            goalCelebrationTask = nil
             startTimer()
             UIApplication.shared.isIdleTimerDisabled = model.settings.keepAwake
         }
         .onDisappear {
             timer?.invalidate()
+            goalCelebrationTask?.cancel()
             UIApplication.shared.isIdleTimerDisabled = false
             stopHiddenPaginationForReaderExit()
             saveSession()
@@ -355,6 +385,34 @@ struct ReaderView: View {
         }
     }
 
+    private var goalCelebrationBanner: some View {
+        VStack {
+            HStack(spacing: 12) {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 15, weight: .black))
+                    .foregroundStyle(model.theme.isDark ? Color.black : Color.white)
+                    .frame(width: 28, height: 28)
+                    .background(Theme.imsg, in: Circle())
+
+                Text("Today’s reading goal achieved")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(model.theme.foregroundColor.opacity(0.62))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 10)
+            .background(model.theme.panelMaterial, in: Capsule())
+            .overlay(Capsule().stroke(Color.gray.opacity(0.12), lineWidth: 1))
+            .shadow(color: .black.opacity(model.theme.isDark ? 0.28 : 0.12), radius: 18, x: 0, y: 8)
+            .padding(.horizontal, 24)
+            .padding(.top, 8)
+
+            Spacer()
+        }
+        .allowsHitTesting(false)
+    }
+
     private var topBar: some View {
         HStack(spacing: 8) {
             Button { close() } label: {
@@ -394,10 +452,19 @@ struct ReaderView: View {
                     .monospacedDigit()
             }
             .frame(maxWidth: .infinity)
-            Text(Fmt.timer(elapsed))
-                .font(.system(size: 14, weight: .bold))
-                .foregroundStyle(model.theme.foregroundColor)
-                .monospacedDigit()
+            HStack(spacing: 5) {
+                if readingGoalMet {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(Theme.imsg)
+                        .transition(.scale.combined(with: .opacity))
+                }
+                Text(Fmt.timer(elapsed))
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(model.theme.foregroundColor)
+                    .monospacedDigit()
+            }
+            .animation(.spring(response: 0.24, dampingFraction: 0.78), value: readingGoalMet)
             Button {
                 toggleBookmark()
             } label: {
@@ -1271,6 +1338,27 @@ struct ReaderView: View {
                     progressPct: model.overallProgress,
                     cfi: model.readiumLocatorJSON
                 )
+                maybeShowGoalCelebration()
+            }
+        }
+    }
+
+    private func maybeShowGoalCelebration() {
+        guard !goalCelebrationShown, !goalMetAtSessionStart, readingGoalMet else { return }
+        goalCelebrationShown = true
+        goalCelebrationTask?.cancel()
+
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
+            showGoalCelebration = true
+        }
+
+        goalCelebrationTask = Task {
+            try? await Task.sleep(nanoseconds: 2_800_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                withAnimation(.easeInOut(duration: 0.22)) {
+                    showGoalCelebration = false
+                }
             }
         }
     }

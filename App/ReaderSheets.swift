@@ -177,12 +177,12 @@ struct ReaderSettingsSheet: View {
     private var layoutGroup: some View {
         SettingsGroup(title: "Page Turn") {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8) {
-                ForEach(PageAnimation.allCases, id: \.self) { animation in
+                ForEach(PageAnimation.displayCases, id: \.self) { animation in
                     pageTurnButton(animation)
                 }
             }
 
-            Text("Slide uses Readium's native page advance. Fade, Rigid, and Curl use BookMark's transition layer while keeping Readium's EPUB layout.")
+            Text("Slide uses Readium's native page advance. Fade and Realistic use BookMark's transition layer while keeping Readium's EPUB layout. Tap the selected option again for no animation.")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .padding(.top, 4)
@@ -243,7 +243,7 @@ struct ReaderSettingsSheet: View {
     private func pageTurnButton(_ animation: PageAnimation) -> some View {
         let isSelected = model.settings.pageAnim == animation
         return Button {
-            model.settings.pageAnim = animation
+            model.settings.pageAnim = isSelected ? .none : animation
         } label: {
             VStack(spacing: 6) {
                 Image(systemName: animation.iconName)
@@ -286,12 +286,14 @@ private extension PageCountMode {
 }
 
 private extension PageAnimation {
+    static var displayCases: [PageAnimation] { [.slide, .fade, .curl] }
+
     var label: String {
         switch self {
         case .slide: return "Slide"
         case .fade: return "Fade"
-        case .rigid: return "Rigid"
-        case .curl: return "Curl"
+        case .rigid: return "Realistic"
+        case .curl: return "Realistic"
         case .none: return "None"
         }
     }

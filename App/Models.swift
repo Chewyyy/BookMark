@@ -420,6 +420,7 @@ struct ReaderSettings: Codable, Hashable {
         margins = try c.decodeIfPresent(LayoutMargin.self, forKey: .margins) ?? .normal
         justify = try c.decodeIfPresent(Bool.self, forKey: .justify) ?? false
         pageAnim = try c.decodeIfPresent(PageAnimation.self, forKey: .pageAnim) ?? .slide
+        if pageAnim == .rigid { pageAnim = .curl }
         swipe = try c.decodeIfPresent(Bool.self, forKey: .swipe) ?? true
         keepAwake = try c.decodeIfPresent(Bool.self, forKey: .keepAwake) ?? true
         pageCountMode = .paginatedBook

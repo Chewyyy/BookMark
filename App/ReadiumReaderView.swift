@@ -243,7 +243,8 @@ struct ReadiumReaderContainer: View {
         guard animation == .curl else { return }
 
         let direction = dx < 0 ? 1 : -1
-        let progress = min(0.98, max(0.02, abs(dx) / max(size.width * 0.46, 1)))
+        let rawProgress = abs(dx) / max(size.width * 0.72, 1)
+        let progress = min(0.98, max(0.02, rawProgress))
         let verticalPull = max(-1, min(1, dy / max(size.height * 0.24, 1)))
         let touchY = max(0, min(1, value.startLocation.y / max(size.height, 1)))
 

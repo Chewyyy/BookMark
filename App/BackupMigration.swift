@@ -223,8 +223,7 @@ enum BackupMigration {
         if let v = raw["pageAnim"] as? String {
             switch v {
             case "fade": s.pageAnim = .fade
-            case "rigid": s.pageAnim = .rigid
-            case "curl": s.pageAnim = .curl
+            case "rigid", "curl": s.pageAnim = .curl
             case "none": s.pageAnim = .none
             default: s.pageAnim = .slide
             }
