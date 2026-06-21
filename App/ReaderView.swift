@@ -308,6 +308,7 @@ struct ReaderView: View {
         .sheet(isPresented: $showSettings) {
             ReaderSettingsSheet(model: model)
                 .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.hidden)
         }
         .sheet(isPresented: $showContents) {
             ReaderContentsSheet(
@@ -334,6 +335,7 @@ struct ReaderView: View {
                     showSearch = false
                 }
                 .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.hidden)
             }
         }
         #if DEBUG

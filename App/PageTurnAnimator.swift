@@ -4,16 +4,18 @@ import ReadiumShared
 
 // Snapshot-based page-turn animator that sits in a UIKit overlay above the
 // Readium navigator. It keeps Readium responsible for pagination and content
-// rendering; we only paint the outgoing page on top while the new page renders
-// underneath.
+// rendering. The existing curl modes still reveal the live rendered destination
+// underneath; Test Curl paints both the outgoing and destination pages from
+// snapshots so the live navigator is hidden for the whole gesture.
 //
-// Timing contract for every turn:
-//   1) Capture an outgoing snapshot of Readium's view BEFORE navigation.
+// Timing contract for Test Curl:
+//   1) Capture the current visible Readium page before navigation.
 //   2) Cover the navigator with that snapshot so the user never sees a flash.
-//   3) Call Readium navigation with animated:false; the new page renders underneath.
-//   4) Wait one render pass so the destination page is present underneath.
-//   5) Animate the outgoing snapshot away with the selected segmented page turn.
-//   6) Remove all overlay layers; Readium's live view is the final visible page.
+//   3) Ask Readium to move exactly one page with animated:false.
+//   4) Wait one render pass, then capture the destination page snapshot.
+//   5) Animate only snapshot layers/textures during drag/commit/cancel.
+//   6) On commit, reveal Readium at the destination. On cancel, revert Readium
+//      under cover and reveal the original live page.
 @MainActor
 final class PageTurnAnimator {
     weak var hostView: UIView?
@@ -27,6 +29,16 @@ final class PageTurnAnimator {
     // Frame budget for hand-driven animations (~60fps).
     private static let frameStepNanoseconds: UInt64 = 16_000_000
 
+    private enum PageTurnState {
+        case idle
+        case preparingTurn
+        case draggingForward
+        case draggingBackward
+        case completingTurn
+        case cancellingTurn
+        case syncingReadium
+    }
+
     private struct InteractiveSession {
         let direction: Int
         let mode: PageAnimation
@@ -36,6 +48,8 @@ final class PageTurnAnimator {
         let foldHighlight: CAGradientLayer
         let underShadow: CAGradientLayer
         let image: UIImage
+        let snapshotOnly: Bool
+        var metalCurlView: MetalPageCurlView?
         var navigationCompleted: Bool
         var navigationSucceeded: Bool
         var coverFallback: UIImageView?
@@ -44,6 +58,7 @@ final class PageTurnAnimator {
         var lastTouchY: CGFloat
     }
     private var session: InteractiveSession?
+    private var turnState: PageTurnState = .idle
 
     init(palette: ReaderThemePalette.Palette) {
         self.palette = palette
@@ -60,10 +75,14 @@ final class PageTurnAnimator {
     func performTapTurn(direction: Int, mode: PageAnimation) async -> Bool {
         guard !isAnimating, session == nil else { return false }
         guard let hostView, let nav = navigatorController else { return false }
-        guard mode == .curl || mode == .rigid else { return false }
+        guard mode == .curl || mode == .rigid || mode == .testCurl else { return false }
 
         isAnimating = true
-        defer { isAnimating = false }
+        turnState = .preparingTurn
+        defer {
+            isAnimating = false
+            turnState = .idle
+        }
 
         // 1) Outgoing snapshot first.
         guard let image = captureImage(of: nav.view) else { return false }
@@ -74,6 +93,7 @@ final class PageTurnAnimator {
         cover.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         cover.isUserInteractionEnabled = false
         cover.contentMode = .scaleToFill
+        cover.backgroundColor = palette.uiBackgroundColor
         hostView.addSubview(cover)
 
         // 3) Tell Readium to move; no visible animation here, we drive it.
@@ -85,25 +105,30 @@ final class PageTurnAnimator {
         }
 
         guard success else {
-            // At the edge of the book — just fade out the cover.
+            // At the edge of the book, just fade out the cover.
             await UIView.animateAsync(duration: 0.16) { cover.alpha = 0 }
             cover.removeFromSuperview()
             return false
         }
 
-        // 4) Let the new page render underneath.
+        // 4) Let the new page render underneath and capture it for Test Curl.
         try? await Task.sleep(nanoseconds: Self.renderSettleNanoseconds)
+        let destinationImage = mode == .testCurl ? captureImage(of: nav.view) : nil
 
         // 5) Run the chosen animation.
         switch mode {
         case .rigid, .curl:
             cover.removeFromSuperview()
+            turnState = .completingTurn
             await runCurlAnimation(image: image, direction: direction, allowsFloppyPull: mode == .curl)
+        case .testCurl:
+            turnState = .completingTurn
+            await runSnapshotCurlAnimation(currentImage: image, destinationImage: destinationImage, direction: direction)
         default:
             break
         }
 
-        // 6) Cleanup any leftover cover.
+        // 6) Cleanup any leftover cover. Readium is already at the destination.
         cover.removeFromSuperview()
         return true
     }
@@ -113,39 +138,45 @@ final class PageTurnAnimator {
     /// Returns true if a session was started. Caller should subsequently feed
     /// `updateInteractiveCurl(progress:)` and `endInteractiveCurl(commit:)`.
     @discardableResult
-    func beginInteractiveCurl(direction: Int) -> Bool {
+    func beginInteractiveCurl(direction: Int, mode: PageAnimation = .curl) -> Bool {
         guard !isAnimating, session == nil else { return false }
         guard let hostView, let nav = navigatorController else { return false }
+        guard mode == .curl || mode == .testCurl else { return false }
         guard let image = captureImage(of: nav.view) else { return false }
 
+        let snapshotOnly = mode == .testCurl
         let container = UIView(frame: hostView.bounds)
         container.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         container.isUserInteractionEnabled = false
-        container.backgroundColor = .clear
+        container.backgroundColor = snapshotOnly ? palette.uiBackgroundColor : .clear
         hostView.addSubview(container)
 
-        let strips = createStripLayers(image: image, direction: direction, in: container)
-        let overlays = createCurlOverlays(in: container, direction: direction)
+        let strips = snapshotOnly ? [] : createStripLayers(image: image, direction: direction, in: container)
+        let overlays = snapshotOnly ? createDetachedCurlOverlays() : createCurlOverlays(in: container, direction: direction)
 
         // Keep the outgoing snapshot above the strips until Readium has rendered
-        // the destination page underneath; then the animated strips can reveal it.
+        // the destination page underneath or until Test Curl has captured it.
         let cover = UIImageView(image: image)
         cover.frame = container.bounds
         cover.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         cover.contentMode = .scaleToFill
+        cover.backgroundColor = palette.uiBackgroundColor
         cover.layer.zPosition = 10_000
         container.addSubview(cover)
 
         isAnimating = true
+        turnState = .preparingTurn
         session = InteractiveSession(
             direction: direction,
-            mode: .curl,
+            mode: mode,
             container: container,
             stripLayers: strips,
             foldShadow: overlays.shadow,
             foldHighlight: overlays.highlight,
             underShadow: overlays.under,
             image: image,
+            snapshotOnly: snapshotOnly,
+            metalCurlView: nil,
             navigationCompleted: false,
             navigationSucceeded: false,
             coverFallback: cover,
@@ -157,7 +188,7 @@ final class PageTurnAnimator {
         // Initial state so transforms are set even before first drag delta.
         applyCurlProgress(0.001, direction: direction, verticalPull: 0, touchY: 0.5)
 
-        // Navigate in the background so the new page is ready underneath.
+        // Navigate in the background so the target page can be captured under cover.
         Task { [weak self] in
             let success: Bool
             if direction > 0 {
@@ -166,6 +197,7 @@ final class PageTurnAnimator {
                 success = await nav.goBackward(options: NavigatorGoOptions(animated: false))
             }
             try? await Task.sleep(nanoseconds: Self.renderSettleNanoseconds)
+            let destinationImage = snapshotOnly ? self?.captureImage(of: nav.view) : nil
             await MainActor.run {
                 guard let self else { return }
                 guard var current = self.session, current.direction == direction else { return }
@@ -173,11 +205,42 @@ final class PageTurnAnimator {
                 current.navigationSucceeded = success
                 self.session = current
                 if success {
-                    // Reveal the strip-based view (drop the static cover so the new page is visible underneath).
+                    if snapshotOnly {
+                        guard let destinationImage,
+                              let metalCurlView = MetalPageCurlView(
+                                frame: current.container.bounds,
+                                currentImage: current.image,
+                                destinationImage: destinationImage,
+                                direction: current.direction,
+                                palette: self.palette
+                              ) else {
+                            self.session = current
+                            self.endInteractiveCurl(commit: false)
+                            return
+                        }
+                        metalCurlView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                        current.container.insertSubview(metalCurlView, at: 0)
+                        metalCurlView.update(
+                            progress: current.lastProgress,
+                            verticalPull: current.lastVerticalPull,
+                            touchY: current.lastTouchY
+                        )
+                        current.metalCurlView = metalCurlView
+                        self.session = current
+                    }
+                    self.turnState = direction > 0 ? .draggingForward : .draggingBackward
                     current.coverFallback?.removeFromSuperview()
                     self.session?.coverFallback = nil
+                    if let latest = self.session {
+                        self.applyCurlProgress(
+                            latest.lastProgress,
+                            direction: latest.direction,
+                            verticalPull: latest.lastVerticalPull,
+                            touchY: latest.lastTouchY
+                        )
+                    }
                 } else {
-                    // No page to turn to — cancel cleanly.
+                    // No page to turn to, so cancel cleanly at the edge of the book.
                     self.endInteractiveCurl(commit: false)
                 }
             }
@@ -193,6 +256,9 @@ final class PageTurnAnimator {
         session?.lastProgress = clamped
         session?.lastVerticalPull = clampedVertical
         session?.lastTouchY = clampedTouchY
+        if s.navigationSucceeded {
+            turnState = s.direction > 0 ? .draggingForward : .draggingBackward
+        }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         applyCurlProgress(clamped, direction: s.direction, verticalPull: clampedVertical, touchY: clampedTouchY)
@@ -206,17 +272,20 @@ final class PageTurnAnimator {
         let navigationCompleted = current.navigationCompleted
         let nav = navigatorController
 
-        // If commit was requested but navigation didn't actually move (e.g. edge of book),
-        // treat it as a cancel so we don't strand the user on a snapshot.
+        // If commit was requested but navigation didn't actually move, treat it
+        // as a cancel so we don't strand the user on a snapshot.
         let actuallyCommit = commit && navigationSucceeded
 
         if actuallyCommit {
+            turnState = .completingTurn
             let remaining = max(0, 1 - current.lastProgress)
             let duration = TimeInterval(max(0.18, min(0.38, 0.12 + remaining * 0.34)))
             runManualProgress(from: current.lastProgress, to: 1.0, verticalFrom: current.lastVerticalPull, touchY: current.lastTouchY, duration: duration) { [weak self] in
+                self?.turnState = .syncingReadium
                 self?.teardownInteractive()
             }
         } else {
+            turnState = .cancellingTurn
             // Animate back to flat. If we already moved Readium forward, revert it.
             let duration = TimeInterval(max(0.16, min(0.30, 0.10 + current.lastProgress * 0.24)))
             runManualProgress(from: current.lastProgress, to: 0.0, verticalFrom: current.lastVerticalPull, touchY: current.lastTouchY, duration: duration) { [weak self] in
@@ -228,9 +297,12 @@ final class PageTurnAnimator {
                     cover.frame = s.container.bounds
                     cover.autoresizingMask = [.flexibleWidth, .flexibleHeight]
                     cover.contentMode = .scaleToFill
+                    cover.backgroundColor = self.palette.uiBackgroundColor
+                    cover.layer.zPosition = 10_001
                     s.container.addSubview(cover)
                     for layer in s.stripLayers { layer.isHidden = true }
                     Task { @MainActor in
+                        self.turnState = .syncingReadium
                         if let nav {
                             if direction > 0 {
                                 _ = await nav.goBackward(options: NavigatorGoOptions(animated: false))
@@ -258,6 +330,7 @@ final class PageTurnAnimator {
         session?.container.removeFromSuperview()
         session = nil
         isAnimating = false
+        turnState = .idle
     }
 
     // MARK: - Segmented page animation
@@ -273,6 +346,62 @@ final class PageTurnAnimator {
         let strips = createStripLayers(image: image, direction: direction, in: container)
         let overlays = createCurlOverlays(in: container, direction: direction)
 
+        await runProgressAnimation(
+            direction: direction,
+            container: container,
+            strips: strips,
+            overlays: overlays,
+            allowsFloppyPull: allowsFloppyPull
+        )
+    }
+
+    private func runSnapshotCurlAnimation(currentImage: UIImage, destinationImage: UIImage?, direction: Int) async {
+        guard let hostView else { return }
+        let container = UIView(frame: hostView.bounds)
+        container.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        container.isUserInteractionEnabled = false
+        container.backgroundColor = palette.uiBackgroundColor
+        hostView.addSubview(container)
+        defer { container.removeFromSuperview() }
+
+        guard let destinationImage,
+              let metalCurlView = MetalPageCurlView(
+                frame: container.bounds,
+                currentImage: currentImage,
+                destinationImage: destinationImage,
+                direction: direction,
+                palette: palette
+              ) else {
+            return
+        }
+
+        metalCurlView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        container.addSubview(metalCurlView)
+        await runMetalProgressAnimation(metalCurlView: metalCurlView, direction: direction)
+    }
+
+    private func runMetalProgressAnimation(metalCurlView: MetalPageCurlView, direction: Int) async {
+        let duration: TimeInterval = 0.72
+        let start = CACurrentMediaTime()
+        while true {
+            let elapsed = CACurrentMediaTime() - start
+            let t = min(1.0, elapsed / duration)
+            let eased = 1 - pow(1 - CGFloat(t), 2.35)
+            metalCurlView.update(
+                progress: eased,
+                verticalPull: sin(CGFloat(t) * .pi) * -0.16,
+                touchY: 0.18
+            )
+            if t >= 1.0 { break }
+            try? await Task.sleep(nanoseconds: Self.frameStepNanoseconds)
+        }
+    }
+
+    private func runProgressAnimation(direction: Int,
+                                      container: UIView,
+                                      strips: [CALayer],
+                                      overlays: (shadow: CAGradientLayer, highlight: CAGradientLayer, under: CAGradientLayer),
+                                      allowsFloppyPull: Bool) async {
         let duration: TimeInterval = 0.72
         let start = CACurrentMediaTime()
         while true {
@@ -315,17 +444,67 @@ final class PageTurnAnimator {
         }
     }
 
-    private func createStripLayers(image: UIImage, direction: Int, in container: UIView) -> [CALayer] {
+    private func installUnderSnapshot(_ image: UIImage, in container: UIView) {
+        let underView = UIImageView(image: image)
+        underView.frame = container.bounds
+        underView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        underView.contentMode = .scaleToFill
+        underView.backgroundColor = palette.uiBackgroundColor
+        underView.isUserInteractionEnabled = false
+        container.insertSubview(underView, at: 0)
+    }
+
+    private func setSnapshotLayersVisible(_ visible: Bool,
+                                          strips: [CALayer],
+                                          overlays: (shadow: CAGradientLayer, highlight: CAGradientLayer, under: CAGradientLayer)) {
+        for layer in strips { layer.isHidden = !visible }
+        overlays.shadow.isHidden = !visible
+        overlays.highlight.isHidden = !visible
+        overlays.under.isHidden = !visible
+    }
+
+    private func createStripLayers(image: UIImage, direction: Int, in container: UIView, segmentCount: Int = 1) -> [CALayer] {
         guard let cgImage = image.cgImage else { return [] }
         let containerSize = container.bounds.size
         guard containerSize.width > 0, containerSize.height > 0 else { return [] }
 
         let forward = direction > 0
+        let count = max(1, segmentCount)
 
         var perspective = CATransform3DIdentity
         perspective.m34 = -1.0 / 1200.0
         container.layer.sublayerTransform = perspective
 
+        if count == 1 {
+            let layer = configuredPageLayer(image: image, cgImage: cgImage)
+            layer.bounds = CGRect(x: 0, y: 0, width: containerSize.width, height: containerSize.height)
+            layer.anchorPoint = CGPoint(x: forward ? 0 : 1, y: 0.5)
+            layer.position = CGPoint(x: forward ? 0 : containerSize.width, y: containerSize.height / 2)
+            container.layer.addSublayer(layer)
+            return [layer]
+        }
+
+        let stripWidth = containerSize.width / CGFloat(count)
+        return (0..<count).map { index in
+            let layer = configuredPageLayer(image: image, cgImage: cgImage)
+            let x = CGFloat(index) * stripWidth
+            let width = index == count - 1 ? containerSize.width - x : stripWidth
+            layer.contentsGravity = .resizeAspectFill
+            layer.contentsRect = CGRect(
+                x: CGFloat(index) / CGFloat(count),
+                y: 0,
+                width: 1 / CGFloat(count),
+                height: 1
+            )
+            layer.bounds = CGRect(x: 0, y: 0, width: width + 0.5, height: containerSize.height)
+            layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+            layer.position = CGPoint(x: x + width / 2, y: containerSize.height / 2)
+            container.layer.addSublayer(layer)
+            return layer
+        }
+    }
+
+    private func configuredPageLayer(image: UIImage, cgImage: CGImage) -> CALayer {
         let layer = CALayer()
         layer.contents = cgImage
         layer.contentsGravity = .resize
@@ -342,12 +521,11 @@ final class PageTurnAnimator {
         layer.shadowOpacity = 0
         layer.shadowRadius = 18
         layer.shadowOffset = .zero
-        layer.bounds = CGRect(x: 0, y: 0, width: containerSize.width, height: containerSize.height)
-        layer.anchorPoint = CGPoint(x: forward ? 0 : 1, y: 0.5)
-        layer.position = CGPoint(x: forward ? 0 : containerSize.width, y: containerSize.height / 2)
+        return layer
+    }
 
-        container.layer.addSublayer(layer)
-        return [layer]
+    private func createDetachedCurlOverlays() -> (shadow: CAGradientLayer, highlight: CAGradientLayer, under: CAGradientLayer) {
+        (CAGradientLayer(), CAGradientLayer(), CAGradientLayer())
     }
 
     private func createCurlOverlays(in container: UIView, direction: Int) -> (shadow: CAGradientLayer, highlight: CAGradientLayer, under: CAGradientLayer) {
@@ -398,6 +576,10 @@ final class PageTurnAnimator {
 
     private func applyCurlProgress(_ progress: CGFloat, direction: Int, verticalPull: CGFloat, touchY: CGFloat) {
         guard let s = session else { return }
+        if s.snapshotOnly, let metalCurlView = s.metalCurlView {
+            metalCurlView.update(progress: progress, verticalPull: verticalPull, touchY: touchY)
+            return
+        }
         apply(progress: progress,
               direction: direction,
               container: s.container,
@@ -605,5 +787,20 @@ private extension UIView {
                 cont.resume()
             }
         }
+    }
+}
+
+extension ReaderThemePalette.Palette {
+    var uiBackgroundColor: UIColor {
+        UIColor(
+            red: channel(bg, 16),
+            green: channel(bg, 8),
+            blue: channel(bg, 0),
+            alpha: 1
+        )
+    }
+
+    func channel(_ value: UInt32, _ shift: UInt32) -> CGFloat {
+        CGFloat((value >> shift) & 0xFF) / 255.0
     }
 }

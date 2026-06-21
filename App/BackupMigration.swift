@@ -224,6 +224,7 @@ enum BackupMigration {
             switch v {
             case "fade": s.pageAnim = .fade
             case "rigid", "curl": s.pageAnim = .curl
+            case "testCurl": s.pageAnim = .testCurl
             case "none": s.pageAnim = .none
             default: s.pageAnim = .slide
             }

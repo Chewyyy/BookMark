@@ -16,6 +16,14 @@ enum Theme {
     static let cornerLarge: CGFloat = 14
     static let cornerSmall: CGFloat = 10
 
+    /// Tint laid over the glass backing of action sheets so the whole sheet
+    /// reads as one uniform shade. The opacity is the translucency — keep it
+    /// fixed to preserve how much glass shows. To make the sheet brighter
+    /// without touching translucency, lighten `sheetTintBase`; point it back at
+    /// `card` for the original dark shade.
+    static let sheetTintBase = Color("bm.sheetTint", fallbackLight: hex(0x0B0B0D), fallbackDark: hex(0x000000))
+    static let sheetTint = sheetTintBase.opacity(0.75)
+
     static let cardShadow = Shadow(color: .black.opacity(0.07), radius: 12, y: 2)
     static let cardShadowLg = Shadow(color: .black.opacity(0.13), radius: 28, y: 8)
 

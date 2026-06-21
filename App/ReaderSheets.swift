@@ -182,7 +182,7 @@ struct ReaderSettingsSheet: View {
                 }
             }
 
-            Text("Slide uses Readium's native page advance. Fade and Realistic use BookMark's transition layer while keeping Readium's EPUB layout. Tap the selected option again for no animation.")
+            Text("Slide uses Readium's native page advance. Fade and Realistic use BookMark's transition layer. Test Curl uses a stricter snapshot-only UIKit/Core Animation turn. Tap the selected option again for no animation.")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .padding(.top, 4)
@@ -294,6 +294,7 @@ private extension PageAnimation {
         case .fade: return "Fade"
         case .rigid: return "Realistic"
         case .curl: return "Realistic"
+        case .testCurl: return "Test Curl"
         case .none: return "None"
         }
     }
@@ -304,6 +305,7 @@ private extension PageAnimation {
         case .fade: return "circle.lefthalf.filled"
         case .rigid: return "rectangle.portrait.rotate"
         case .curl: return "text.page.badge.magnifyingglass"
+        case .testCurl: return "rectangle.portrait.on.rectangle.portrait.angled"
         case .none: return "nosign"
         }
     }

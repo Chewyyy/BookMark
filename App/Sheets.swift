@@ -69,7 +69,7 @@ struct BookActionsSheet: View {
             }
             .padding(.bottom, 14)
 
-            ActionGroup {
+            ActionGroup(translucent: true) {
                 ActionRow(icon: "book", title: "Continue Reading", action: onContinue)
                 ActionRow(
                     icon: book.finished ? "calendar.badge.clock" : "checkmark.seal",
@@ -83,7 +83,6 @@ struct BookActionsSheet: View {
         .padding(.horizontal, 16)
         .padding(.top, 12)
         .padding(.bottom, 24)
-        .background(Theme.background)
     }
 }
 
@@ -306,7 +305,6 @@ struct GoalEditorSheet: View {
         .padding(.horizontal, 16)
         .padding(.top, 12)
         .padding(.bottom, 24)
-        .background(Theme.background)
         .onAppear {
             minutes = store.goal.minutes
             reminderEnabled = store.goal.reminderEnabled
@@ -319,6 +317,107 @@ struct GoalEditorSheet: View {
         comps.hour = min(23, max(0, hour))
         comps.minute = min(59, max(0, minute))
         return Calendar.current.date(from: comps) ?? Date()
+    }
+}
+
+// MARK: - Yearly Books Goal
+
+struct YearGoalEditorSheet: View {
+    @EnvironmentObject private var store: Store
+    @Environment(\.dismiss) private var dismiss
+    @State private var goal: Int = 10
+
+    private let chips = [5, 10, 12, 24, 52]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Grabber()
+            VStack(spacing: 4) {
+                Text("Yearly Reading Goal").font(.system(size: 16, weight: .heavy))
+                Text("How many books do you want to finish this year?")
+                    .font(.system(size: 12)).foregroundStyle(Theme.subtle)
+                    .multilineTextAlignment(.center)
+            }
+            .padding(.bottom, 16)
+
+            HStack(spacing: 22) {
+                stepButton("minus") { goal = max(1, goal - 1) }
+                Text("\(goal)")
+                    .font(.system(size: 44, weight: .heavy))
+                    .foregroundStyle(Theme.text)
+                    .frame(minWidth: 90)
+                    .contentTransition(.numericText())
+                stepButton("plus") { goal = min(999, goal + 1) }
+            }
+            .padding(.bottom, 16)
+
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: chips.count), spacing: 8) {
+                ForEach(chips, id: \.self) { v in
+                    Button { goal = v } label: {
+                        Text("\(v)")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(goal == v ? Theme.accent : Theme.text)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 11)
+                            .background(goal == v ? Theme.accent.opacity(0.08) : Theme.card)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: Theme.cornerSmall)
+                                    .stroke(goal == v ? Theme.accent : Theme.border, lineWidth: 2)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: Theme.cornerSmall))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.bottom, 16)
+
+            HStack(spacing: 10) {
+                Button { dismiss() } label: {
+                    Text("Cancel")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(Theme.text)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(Theme.card)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: Theme.cornerSmall)
+                                .stroke(Theme.border, lineWidth: 1)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: Theme.cornerSmall))
+                }
+                .buttonStyle(.plain)
+                Button {
+                    store.goal.booksPerYear = max(1, goal)
+                    store.scheduleSave()
+                    dismiss()
+                } label: {
+                    Text("Save Goal")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(Theme.accent)
+                        .clipShape(RoundedRectangle(cornerRadius: Theme.cornerSmall))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
+        .padding(.bottom, 24)
+        .onAppear { goal = max(1, store.goal.booksPerYear) }
+    }
+
+    private func stepButton(_ icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 18, weight: .heavy))
+                .foregroundStyle(Theme.accent)
+                .frame(width: 50, height: 50)
+                .background(Theme.accent.opacity(0.1))
+                .clipShape(Circle())
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -655,13 +754,14 @@ struct DayDetailSheet: View {
             .padding(.top, 12)
             .padding(.bottom, 24)
         }
-        .background(Theme.background)
         .onAppear {
             if let first = store.continueBook() { selectedBookId = first.id }
         }
         .sheet(item: $editingSession) { s in
             SessionEditorSheet(session: s)
-                .presentationDetents([.large])
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.hidden)
+                .glassSheetPresentation()
         }
     }
 
@@ -926,7 +1026,6 @@ struct SessionEditorSheet: View {
             .padding(.top, 12)
             .padding(.bottom, 24)
         }
-        .background(Theme.background)
         .onAppear {
             bookId = session.bookId ?? ""
             startDate = session.start
@@ -996,6 +1095,59 @@ struct SessionEditorSheet: View {
 
 // MARK: - Shared sheet bits
 
+extension View {
+    /// Applies a Liquid Glass backing to a *presented sheet* (iOS 26+), falling
+    /// back to a frosted material on older systems.
+    ///
+    /// This MUST be set as the sheet's presentation background. A plain
+    /// `.background(...)` on the sheet content sits *in front of* the sheet's
+    /// own (opaque) window backing, so it can never reveal the content behind
+    /// the sheet — only `presentationBackground` controls the actual backing.
+    @ViewBuilder
+    func glassSheetPresentation() -> some View {
+        if #available(iOS 26.0, *) {
+            presentationBackground {
+                Color.clear
+                    .glassEffect(.regular, in: .rect(cornerRadius: 34))
+                    .overlay(Theme.sheetTint)
+                    .overlay(glassRim)
+                    .ignoresSafeArea()
+            }
+        } else {
+            presentationBackground {
+                Rectangle()
+                    .fill(.regularMaterial)
+                    .overlay(Theme.sheetTint)
+                    .overlay(glassRim)
+                    .ignoresSafeArea()
+            }
+        }
+    }
+
+    /// A neutral (no-tint) luminous edge highlight that gives the sheet the
+    /// Liquid Glass "lit rim" look — brightest along the top, fading down.
+    private var glassRim: some View {
+        RoundedRectangle(cornerRadius: 34, style: .continuous)
+            .strokeBorder(
+                LinearGradient(
+                    colors: [.white.opacity(0.6), .white.opacity(0.12), .clear],
+                    startPoint: .top,
+                    endPoint: .bottom
+                ),
+                lineWidth: 1.2
+            )
+    }
+}
+
+/// A detent a little taller than the system `.medium` — roughly a quarter inch
+/// more (~40 pt) — so the day-detail / add-session sheets open with their action
+/// buttons sitting closer to the bottom edge. Drag up to `.large` for full screen.
+struct TallerMediumDetent: CustomPresentationDetent {
+    static func height(in context: Context) -> CGFloat? {
+        context.maxDetentValue * 0.5 + 95
+    }
+}
+
 struct Grabber: View {
     var body: some View {
         Capsule()
@@ -1006,14 +1158,18 @@ struct Grabber: View {
 }
 
 struct ActionGroup<Content: View>: View {
+    /// When true, the card draws no fill of its own so the sheet's tinted glass
+    /// backing reads through it as one uniform shade. The tint lives on the
+    /// sheet (see `Theme.sheetTint` / `glassSheetPresentation`).
+    var translucent: Bool = false
     @ViewBuilder var content: Content
     var body: some View {
         VStack(spacing: 0) {
             content
         }
-        .background(Theme.card)
+        .background(translucent ? Color.clear : Theme.card)
         .clipShape(RoundedRectangle(cornerRadius: Theme.cornerLarge))
-        .shadow(color: .black.opacity(0.07), radius: 12, y: 2)
+        .shadow(color: .black.opacity(translucent ? 0 : 0.07), radius: 12, y: 2)
     }
 }
 

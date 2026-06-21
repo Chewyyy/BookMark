@@ -73,13 +73,17 @@ struct JournalView: View {
         .sheet(isPresented: $showGoalEditor) {
             GoalEditorSheet()
                 .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.hidden)
+                .glassSheetPresentation()
         }
         .sheet(item: Binding(
             get: { daySheetKey.map { DayKey(id: $0) } },
             set: { daySheetKey = $0?.id }
         )) { key in
             DayDetailSheet(dayKey: key.id)
-                .presentationDetents([.large])
+                .presentationDetents([.custom(TallerMediumDetent.self), .large])
+                .presentationDragIndicator(.hidden)
+                .glassSheetPresentation()
         }
         .sheet(item: $finishTarget) { bk in
             FinishDateSheet(book: bk) { }

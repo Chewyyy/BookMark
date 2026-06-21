@@ -63,7 +63,8 @@ struct LibraryView: View {
                 onDetails: { detailTarget = book; bookActionTarget = nil },
                 onRemove: { store.removeBook(id: book.id); bookActionTarget = nil; toast("Book removed") }
             )
-            .presentationDetents([.medium])
+            .presentationDetents([.height(350)])
+            .glassSheetPresentation()
         }
         .sheet(item: $detailTarget) { book in
             BookDetailsSheet(book: book)

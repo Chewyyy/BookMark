@@ -292,21 +292,25 @@ struct ReadingGoal: Codable, Hashable {
     var reminderEnabled: Bool
     var reminderHour: Int
     var reminderMinute: Int
+    /// Books the user aims to finish this calendar year.
+    var booksPerYear: Int
 
     init(
         minutes: Int = 15,
         reminderEnabled: Bool = true,
         reminderHour: Int = 18,
-        reminderMinute: Int = 0
+        reminderMinute: Int = 0,
+        booksPerYear: Int = 10
     ) {
         self.minutes = minutes
         self.reminderEnabled = reminderEnabled
         self.reminderHour = reminderHour
         self.reminderMinute = reminderMinute
+        self.booksPerYear = booksPerYear
     }
 
     private enum CodingKeys: String, CodingKey {
-        case minutes, reminderEnabled, reminderHour, reminderMinute
+        case minutes, reminderEnabled, reminderHour, reminderMinute, booksPerYear
     }
 
     init(from decoder: Decoder) throws {
@@ -315,6 +319,7 @@ struct ReadingGoal: Codable, Hashable {
         reminderEnabled = try c.decodeIfPresent(Bool.self, forKey: .reminderEnabled) ?? true
         reminderHour = try c.decodeIfPresent(Int.self, forKey: .reminderHour) ?? 18
         reminderMinute = try c.decodeIfPresent(Int.self, forKey: .reminderMinute) ?? 0
+        booksPerYear = try c.decodeIfPresent(Int.self, forKey: .booksPerYear) ?? 10
     }
 }
 
@@ -332,7 +337,7 @@ enum ReaderFont: String, Codable, CaseIterable, Hashable {
 }
 
 enum PageAnimation: String, Codable, CaseIterable, Hashable {
-    case slide, fade, rigid, curl, none
+    case slide, fade, rigid, curl, testCurl, none
 }
 
 /// How the bottom status bar's "Page X of Y" should be calculated.

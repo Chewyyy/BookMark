@@ -26,6 +26,7 @@ struct StatsView: View {
     @State private var backupRefreshTick = 0
     @State private var publisherStatFlips: Set<String> = []
     @State private var showStatsTools = false
+    @State private var showYearGoalEditor = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -48,9 +49,17 @@ struct StatsView: View {
                     }
                     .padding(.horizontal, 16)
 
-                    YearBooksCard(books: yearFinishedBooks(), year: Calendar.current.component(.year, from: Date()))
+                    YearBooksCard(
+                        books: yearFinishedBooks(),
+                        year: Calendar.current.component(.year, from: Date()),
+                        goal: store.goal.booksPerYear,
+                        onEditGoal: { showYearGoalEditor = true }
+                    )
                         .padding(.horizontal, 16)
 
+                    // Data & Backup moved into the Stats Tools sheet. Hidden on the
+                    // Stats page for now — uncomment to bring the card back.
+                    /*
                     DataAndBackupCard(
                         onExportBackup: exportBackup,
                         onExportCsv: exportCsv,
@@ -68,6 +77,7 @@ struct StatsView: View {
                     )
                     .id(backupRefreshTick)
                     .padding(.horizontal, 16)
+                    */
 
                     recentSessionsSection
                         .padding(.horizontal, 16)
@@ -105,15 +115,17 @@ struct StatsView: View {
             Color.clear
                 .sheet(isPresented: $showManualSession) {
                     DayDetailSheet(dayKey: Fmt.dayKey(Date()))
-                        .presentationDetents([.large])
+                        .presentationDetents([.custom(TallerMediumDetent.self), .large])
+                        .presentationDragIndicator(.hidden)
+                        .glassSheetPresentation()
                 }
         )
         .background(
             Color.clear
                 .sheet(isPresented: $showStatsTools) {
                     statsToolsSheet
-                        .presentationDetents([.height(store.watchedFolderName == nil ? 560 : 615)])
-                        .presentationBackground(Theme.background)
+                        .presentationDetents([.height(store.watchedFolderName == nil ? 660 : 715)])
+                        .glassSheetPresentation()
                 }
         )
         .background(
@@ -122,6 +134,14 @@ struct StatsView: View {
                     WordsPerPageSettingsSheet()
                         .presentationDetents([.height(385)])
                         .presentationBackground(Theme.background)
+                }
+        )
+        .background(
+            Color.clear
+                .sheet(isPresented: $showYearGoalEditor) {
+                    YearGoalEditorSheet()
+                        .presentationDetents([.height(430)])
+                        .glassSheetPresentation()
                 }
         )
         .background(
@@ -142,7 +162,9 @@ struct StatsView: View {
             Color.clear
                 .sheet(item: $editingSession) { s in
                     SessionEditorSheet(session: s)
-                        .presentationDetents([.large])
+                        .presentationDetents([.medium, .large])
+                        .presentationDragIndicator(.hidden)
+                        .glassSheetPresentation()
                 }
         )
         .background(
@@ -205,42 +227,57 @@ struct StatsView: View {
                 .foregroundStyle(Theme.accent)
                 .frame(width: 36, height: 36)
         }
-        .accessibilityLabel("Stats Tools")
+        .accessibilityLabel("Tools")
     }
 
     private var statsToolsSheet: some View {
         VStack(spacing: 0) {
             Grabber()
-            Text("Stats Tools")
-                .font(.system(size: 20, weight: .heavy))
-                .padding(.bottom, 18)
+            Text("Tools")
+                .font(.system(size: 16, weight: .heavy))
+                .padding(.bottom, 14)
 
             ScrollView {
-                VStack(spacing: 0) {
-                    statsToolRow("Words Per Page", systemImage: "textformat.size") {
-                        showWordsPerPageSettings = true
+                VStack(spacing: 12) {
+                    ActionGroup(translucent: true) {
+                        statsBackupFolderRow
                     }
-                    statsToolRow("Rescan Folder", systemImage: "folder.badge.plus") {
-                        folderPickerPurpose = .rescan
-                        showFolderPicker = true
-                    }
-                    statsToolRow(store.watchedFolderName.map { "Watching: \($0)" } ?? "Watch Import Folder", systemImage: "folder.badge.gearshape") {
-                        folderPickerPurpose = .watch
-                        showFolderPicker = true
-                    }
-                    if store.watchedFolderName != nil {
-                        statsToolRow("Stop Watching Folder", systemImage: "xmark.circle", role: .destructive) {
-                            store.clearWatchedFolder()
-                            showToast("Stopped watching folder")
+
+                    ActionGroup(translucent: true) {
+                        statsToolRow("Words Per Page", systemImage: "textformat.size") {
+                            showWordsPerPageSettings = true
+                        }
+                        statsToolRow("Rescan Folder", systemImage: "folder.badge.plus") {
+                            folderPickerPurpose = .rescan
+                            showFolderPicker = true
+                        }
+                        statsToolRow(store.watchedFolderName.map { "Watching: \($0)" } ?? "Watch Import Folder", systemImage: "folder.badge.gearshape") {
+                            folderPickerPurpose = .watch
+                            showFolderPicker = true
+                        }
+                        if store.watchedFolderName != nil {
+                            statsToolRow("Stop Watching Folder", systemImage: "xmark.circle", role: .destructive) {
+                                store.clearWatchedFolder()
+                                showToast("Stopped watching folder")
+                            }
                         }
                     }
-                    statsToolDivider
-                    statsToolRow("Export Backup", systemImage: "arrow.down.doc", action: exportBackup)
-                    statsToolRow("Save to This iPhone", systemImage: "iphone.gen2", action: saveToThisIPhone)
-                    statsToolRow("Export CSV", systemImage: "tablecells", action: exportCsv)
-                    statsToolRow("Restore Backup", systemImage: "arrow.up.doc") { showRestore = true }
-                    statsToolRow("Import CSV", systemImage: "square.and.arrow.down") { showCsvImport = true }
-                    statsToolRow("Add Manual Session", systemImage: "plus.rectangle.on.folder") { showManualSession = true }
+
+                    Text("Data & Backup")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(Theme.subtle)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, 4)
+                        .padding(.horizontal, 4)
+
+                    ActionGroup(translucent: true) {
+                        statsToolRow("Export Backup", systemImage: "arrow.down.doc", action: exportBackup)
+                        statsToolRow("Save to This iPhone", systemImage: "iphone.gen2", action: saveToThisIPhone)
+                        statsToolRow("Export CSV", systemImage: "tablecells", action: exportCsv)
+                        statsToolRow("Restore Backup", systemImage: "arrow.up.doc") { showRestore = true }
+                        statsToolRow("Import CSV", systemImage: "square.and.arrow.down") { showCsvImport = true }
+                        statsToolRow("Add Manual Session", systemImage: "plus.rectangle.on.folder") { showManualSession = true }
+                    }
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 18)
@@ -248,33 +285,77 @@ struct StatsView: View {
         }
     }
 
-    private var statsToolDivider: some View {
-        Divider()
-            .opacity(0.5)
-            .padding(.vertical, 8)
-    }
-
     private func statsToolRow(_ title: String, systemImage: String, role: ButtonRole? = nil, action: @escaping () -> Void) -> some View {
         Button(role: role) {
             runStatsToolAction(action)
         } label: {
-            HStack(spacing: 14) {
+            HStack(spacing: 12) {
                 Image(systemName: systemImage)
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(role == .destructive ? Color.red : Theme.accent)
-                    .frame(width: 26, height: 26)
-                Text(title)
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(role == .destructive ? Color.red : Theme.text)
+                    .frame(width: 22)
+                Text(title)
+                    .font(.system(size: 15, weight: .semibold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.82)
                 Spacer()
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 13)
+            .foregroundStyle(role == .destructive ? Theme.danger : Theme.text)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 15)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .overlay(Divider().padding(.leading, 50), alignment: .bottom)
+    }
+
+    /// Backup-folder chooser shown at the top of the Stats Tools sheet. Mirrors
+    /// the row that used to live in the (now hidden) Data & Backup card.
+    private var statsBackupFolderRow: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("BACKUP FOLDER")
+                    .font(.system(size: 10, weight: .bold))
+                    .tracking(0.7)
+                    .foregroundStyle(Theme.subtle)
+                Text(store.backupFolderName ?? "On My iPhone / BookMark")
+                    .font(.system(size: 13, weight: .heavy))
+                    .foregroundStyle(Theme.text)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 8)
+            Button {
+                runStatsToolAction { showBackupFolderPicker = true }
+            } label: {
+                Text(store.backupFolderName == nil ? "Choose…" : "Change")
+                    .font(.system(size: 12, weight: .heavy))
+                    .foregroundStyle(Theme.accent)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Theme.accent.opacity(0.12))
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.cornerSmall))
+            }
+            .buttonStyle(.plain)
+            if store.backupFolderName != nil {
+                Button {
+                    runStatsToolAction {
+                        store.clearBackupFolder()
+                        showToast("Backups will save to On My iPhone / BookMark")
+                    }
+                } label: {
+                    Text("Reset")
+                        .font(.system(size: 12, weight: .heavy))
+                        .foregroundStyle(Theme.subtle)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(Theme.subtle.opacity(0.10))
+                        .clipShape(RoundedRectangle(cornerRadius: Theme.cornerSmall))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
     }
 
     private func runStatsToolAction(_ action: @escaping () -> Void) {
@@ -608,7 +689,7 @@ struct StatsView: View {
         let yr = cal.component(.year, from: Date())
         return store.books
             .filter { $0.finished && (cal.component(.year, from: $0.finishedAt ?? Date()) == yr) }
-            .sorted { ($0.finishedAt ?? .distantPast) > ($1.finishedAt ?? .distantPast) }
+            .sorted { ($0.finishedAt ?? .distantPast) < ($1.finishedAt ?? .distantPast) }
     }
 
     private func handleFolderRescan(_ url: URL) {
@@ -964,20 +1045,20 @@ struct PaceChart: View {
 struct YearBooksCard: View {
     let books: [Book]
     let year: Int
+    /// User's yearly books-read target (editable via the Edit Goal button).
+    let goal: Int
+    var onEditGoal: () -> Void = {}
     @Environment(\.horizontalSizeClass) private var hSizeClass
 
-    /// Mirrors the webapp's `YEARLY_BOOK_GOAL` constant.
-    static let yearlyGoal = 10
-
-    private var goalReached: Bool { books.count >= Self.yearlyGoal }
+    private var goalReached: Bool { books.count >= goal }
     private var statusText: String {
-        goalReached ? "Yearly Goal Achieved" : "\(books.count) of \(Self.yearlyGoal) Books"
+        goalReached ? "Yearly Goal Achieved" : "\(books.count) of \(goal) Books"
     }
     private var subText: String {
         if goalReached {
             return "\(books.count) book\(books.count == 1 ? "" : "s") finished — keep the streak going!"
         }
-        let toGo = Self.yearlyGoal - books.count
+        let toGo = goal - books.count
         return "\(books.count) finished. \(toGo) to go."
     }
 
@@ -987,13 +1068,29 @@ struct YearBooksCard: View {
     // stamps in the middle of all that white space.
     private var coverWidth: CGFloat { hSizeClass == .regular ? 96 : 54 }
     private var coverHeight: CGFloat { coverWidth * 1.5 }
-    private var columnCount: Int { hSizeClass == .regular ? 6 : 4}
+    private var columnCount: Int { 6 }
+
+    /// iPad keeps fixed-width thumbnails; iPhone uses flexible columns so the six
+    /// covers stretch to fill the card width instead of leaving blank space.
+    private var gridColumns: [GridItem] {
+        hSizeClass == .regular
+            ? Array(repeating: GridItem(.fixed(coverWidth), spacing: 8), count: columnCount)
+            : Array(repeating: GridItem(.flexible(), spacing: 6), count: columnCount)
+    }
+
+    /// Sizes a cover/placeholder to a fixed thumbnail on iPad, or to fill the
+    /// flexible column at a 2:3 aspect ratio on iPhone.
+    @ViewBuilder
+    private func coverSized(_ content: some View) -> some View {
+        if hSizeClass == .regular {
+            content.frame(width: coverWidth, height: coverHeight)
+        } else {
+            content.aspectRatio(2.0 / 3.0, contentMode: .fit).frame(maxWidth: .infinity)
+        }
+    }
     private var badgeSize: CGFloat { hSizeClass == .regular ? 32 : 22 }
     private var badgeIconSize: CGFloat { hSizeClass == .regular ? 15 : 11 }
     private var coverCornerRadius: CGFloat { hSizeClass == .regular ? 6 : 4 }
-    private var overflowFontSize: CGFloat { hSizeClass == .regular ? 18 : 13 }
-    /// Show one row's worth of thumbnails minus one slot for the "+N" overflow.
-    private var maxThumbnails: Int { columnCount * (hSizeClass == .regular ? 3 : 3) - 1 }
 
     var body: some View {
         VStack(spacing: 14) {
@@ -1013,11 +1110,10 @@ struct YearBooksCard: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 20)
             } else {
-                LazyVGrid(columns: Array(repeating: GridItem(.fixed(coverWidth), spacing: 8), count: columnCount), spacing: 10) {
-                    ForEach(books.prefix(maxThumbnails)) { bk in
+                LazyVGrid(columns: gridColumns, spacing: 10) {
+                    ForEach(books) { bk in
                         ZStack(alignment: .bottomTrailing) {
-                            BookCover(book: bk)
-                                .frame(width: coverWidth, height: coverHeight)
+                            coverSized(BookCover(book: bk))
                                 .clipShape(RoundedRectangle(cornerRadius: coverCornerRadius))
                                 .shadow(color: .black.opacity(0.22), radius: 8, y: 2)
                             Circle().fill(Theme.imsg)
@@ -1028,16 +1124,6 @@ struct YearBooksCard: View {
                                         .foregroundStyle(.white)
                                 )
                                 .offset(x: badgeSize * 0.27, y: badgeSize * 0.27)
-                        }
-                    }
-                    if books.count > maxThumbnails {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: coverCornerRadius)
-                                .fill(Color.black.opacity(0.38))
-                                .frame(width: coverWidth, height: coverHeight)
-                            Text("+\(books.count - maxThumbnails)")
-                                .font(.system(size: overflowFontSize, weight: .heavy))
-                                .foregroundStyle(.white)
                         }
                     }
                 }
@@ -1051,6 +1137,20 @@ struct YearBooksCard: View {
                         .multilineTextAlignment(.center)
                 }
             }
+
+            Button(action: onEditGoal) {
+                HStack(spacing: 6) {
+                    Image(systemName: "target")
+                    Text("Edit Goal")
+                }
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(Theme.accent)
+                .padding(.vertical, 8)
+                .padding(.horizontal, 18)
+                .background(Theme.accent.opacity(0.12))
+                .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 18)

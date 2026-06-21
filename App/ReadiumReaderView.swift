@@ -176,7 +176,7 @@ struct ReadiumReaderContainer: View {
             performFadePageTurn(direction: direction)
             return
         }
-        if animation == .curl || animation == .rigid {
+        if animation == .curl || animation == .rigid || animation == .testCurl {
             guard !bridge.isAnimatingPageTurn else { return }
             onPageTurn(direction)
             Task { @MainActor in
@@ -240,7 +240,7 @@ struct ReadiumReaderContainer: View {
         guard abs(dx) > 6 else { return }
 
         let animation = settings.pageAnim
-        guard animation == .curl else { return }
+        guard animation == .curl || animation == .testCurl else { return }
 
         let direction = dx < 0 ? 1 : -1
         let rawProgress = abs(dx) / max(size.width * 0.72, 1)
@@ -251,7 +251,7 @@ struct ReadiumReaderContainer: View {
         if interactiveCurlDirection == nil {
             guard abs(dx) > abs(dy) * 0.42 else { return }
             guard !bridge.isAnimatingPageTurn else { return }
-            if bridge.beginInteractiveCurl(direction: direction) {
+            if bridge.beginInteractiveCurl(direction: direction, mode: animation) {
                 interactiveCurlDirection = direction
             } else {
                 return
@@ -273,7 +273,7 @@ struct ReadiumReaderContainer: View {
 
         let animation = settings.pageAnim
 
-        if animation == .curl {
+        if animation == .curl || animation == .testCurl {
             // Resolve interactive curl session if one is open.
             if let dragDir = interactiveCurlDirection {
                 interactiveCurlDirection = nil
@@ -367,8 +367,8 @@ final class ReadiumNavigatorBridge: ObservableObject {
     }
 
     @discardableResult
-    func beginInteractiveCurl(direction: Int) -> Bool {
-        animator?.beginInteractiveCurl(direction: direction) ?? false
+    func beginInteractiveCurl(direction: Int, mode: PageAnimation) -> Bool {
+        animator?.beginInteractiveCurl(direction: direction, mode: mode) ?? false
     }
 
     func updateInteractiveCurl(progress: CGFloat, verticalPull: CGFloat = 0, touchY: CGFloat = 0.5) {
@@ -416,7 +416,7 @@ private struct PageTurnOverlay: View {
                 palette.backgroundColor
                     .opacity(0.88 * visual.progress)
                     .transition(.opacity)
-            case .rigid, .curl, .slide, .none:
+            case .rigid, .curl, .testCurl, .slide, .none:
                 EmptyView()
             }
         }
