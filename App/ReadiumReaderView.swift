@@ -100,7 +100,11 @@ struct ReadiumReaderContainer: View {
                         guard !bridge.isSuppressingTestCurlLocationUpdates else { return }
                         bridge.latestLocation = location
                         onLocationChange(location)
-                        bridge.refreshTestCurlIfNeeded()
+                        // A resync replays the live location; scheduling another
+                        // preload here would loop preload→resync→preload forever.
+                        if !bridge.isResyncingReaderState {
+                            bridge.refreshTestCurlIfNeeded()
+                        }
                     },
                     onChapterPageChange: { state in
                         guard !bridge.isSuppressingTestCurlLocationUpdates else { return }
@@ -163,7 +167,10 @@ struct ReadiumReaderContainer: View {
                         }
                 )
             }
-            .allowsHitTesting(settings.pageAnim != .testCurl)
+            // Test Curl owns its own gesture pipeline once its overlay is mounted.
+            // Until then (cold-open preload), keep this SwiftUI layer live so the
+            // center-tap and page turns aren't swallowed for the first few seconds.
+            .allowsHitTesting(settings.pageAnim != .testCurl || !bridge.isTestCurlOverlayReady)
             .ignoresSafeArea()
         }
         .task(id: epubURL) {
@@ -365,6 +372,18 @@ final class ReadiumNavigatorBridge: ObservableObject {
     weak var animator: PageTurnAnimator?
     var latestLocation: ReadiumLocation?
     var isSuppressingTestCurlLocationUpdates = false
+    /// True once the Test Curl interactive overlay is mounted. Until then the
+    /// host keeps the SwiftUI tap layer live so taps/turns work during the
+    /// cold-open preload instead of being swallowed for a few seconds.
+    @Published var isTestCurlOverlayReady = false
+    /// True while a reader-state resync is replaying the live location. Replayed
+    /// location updates must NOT schedule another Test Curl preload, or the
+    /// preload→resync→replay cycle would loop forever.
+    var isResyncingReaderState = false
+    /// Set by the navigator representable to the coordinator's reader-state
+    /// resync. Invoked when the Test Curl preload suppression window closes so the
+    /// page counter and chrome are forced back in sync with the page on screen.
+    var requestReaderStateResync: (() -> Void)?
 
     var isAnimatingPageTurn: Bool { animator?.isAnimating ?? false }
 
@@ -616,6 +635,17 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
             }
             host.pageTurnAnimator.onTestCurlPreloadStateChange = { [weak bridge] isPreloading in
                 bridge?.isSuppressingTestCurlLocationUpdates = isPreloading
+                if !isPreloading {
+                    bridge?.requestReaderStateResync?()
+                }
+            }
+            host.pageTurnAnimator.onTestCurlReadyChange = { [weak bridge] ready in
+                bridge?.isTestCurlOverlayReady = ready
+            }
+            bridge.requestReaderStateResync = { [weak bridge, weak coordinator = context.coordinator] in
+                bridge?.isResyncingReaderState = true
+                coordinator?.resyncReaderStateFromNavigator()
+                bridge?.isResyncingReaderState = false
             }
             context.coordinator.applyHighlights(highlights)
             return host
@@ -654,6 +684,17 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
         }
         host.pageTurnAnimator.onTestCurlPreloadStateChange = { [weak bridge] isPreloading in
             bridge?.isSuppressingTestCurlLocationUpdates = isPreloading
+            if !isPreloading {
+                bridge?.requestReaderStateResync?()
+            }
+        }
+        host.pageTurnAnimator.onTestCurlReadyChange = { [weak bridge] ready in
+            bridge?.isTestCurlOverlayReady = ready
+        }
+        bridge.requestReaderStateResync = { [weak bridge, weak coordinator = context.coordinator] in
+            bridge?.isResyncingReaderState = true
+            coordinator?.resyncReaderStateFromNavigator()
+            bridge?.isResyncingReaderState = false
         }
         host.pageTurnAnimator.updatePalette(ReaderThemePalette.resolve(settings.theme))
         host.pageTurnAnimator.setTestCurlEnabled(settings.pageAnim == .testCurl)
@@ -776,6 +817,10 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
         }
 
         func navigator(_ navigator: Navigator, locationDidChange locator: Locator) {
+            emitLocation(locator)
+        }
+
+        private func emitLocation(_ locator: Locator) {
             let progress = locator.locations.totalProgression ?? locator.locations.progression ?? 0
             let json = try? locator.jsonString()
             let bookPosition = locator.locations.position
@@ -821,8 +866,8 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
                 publisherPageTotal: publisherPages.isEmpty ? nil : publisherPages.count
             ))
 
-            if let viewportNavigator = navigator as? any ViewportObservingNavigator {
-                publishChapterPageState(from: viewportNavigator.viewport)
+            if let navigator {
+                publishChapterPageState(from: navigator.viewport)
             }
         }
 
@@ -842,6 +887,27 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
             pageSpanByResource = [:]
             pageTotalByResource = [:]
             onChapterPageChange(nil)
+        }
+
+        /// Re-deliver the navigator's current location and viewport page state.
+        /// Used by Test Curl after its adjacent-page preload finishes: while
+        /// preloading we suppress location/page updates, but the genuine
+        /// destination page's `locationDidChange` / `viewportDidChange` can land
+        /// inside that suppression window (notably near a chapter boundary, where
+        /// the WKWebView relayout is slower) and be dropped. Replaying the live
+        /// `currentLocation` routes the missed turn through the exact same path a
+        /// normal turn takes, so the page counter, overrides and chrome all land
+        /// once: `updateReadiumLocation` is dedup-guarded by `locatorJSON`, so if
+        /// the real update did arrive this is a harmless no-op. The
+        /// `lastChapterPageState` reset guarantees the chapter chrome re-emits.
+        func resyncReaderStateFromNavigator() {
+            guard let navigator else { return }
+            lastChapterPageState = nil
+            if let locator = navigator.currentLocation {
+                emitLocation(locator)
+            } else {
+                publishChapterPageState(from: navigator.viewport)
+            }
         }
 
         func navigator(_ navigator: Navigator, presentError error: NavigatorError) {}

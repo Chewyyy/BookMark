@@ -2046,7 +2046,13 @@ final class ReaderModel: ObservableObject {
             } else if expectedDirection < 0, !readiumSessionPageWordEstimates.isEmpty {
                 readiumSessionPageWordEstimates.removeLast()
             }
-            readiumSessionPagesRead = max(0, readiumSessionPagesRead + expectedDirection)
+            // Allow the counter to go negative so that turning backward N pages
+            // and then forward N pages nets to 0 (the reader is back where they
+            // started). Clamping at 0 here caused backward-first navigation to
+            // be "forgotten", then double-counted on the way forward. The save
+            // path clamps with `max(0, …)` so a net-negative session simply
+            // records no pages read.
+            readiumSessionPagesRead += expectedDirection
         } else if readiumProgress > oldProgress {
             displayPageOverride = boundedDisplayPage(max(estimated, oldPage + 1))
             paginatedPageOverride = nil

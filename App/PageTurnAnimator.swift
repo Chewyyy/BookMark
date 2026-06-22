@@ -29,6 +29,11 @@ final class PageTurnAnimator {
     var onTestCurlPageTurn: ((Int) -> Void)?
     var onTestCurlCenterTap: (() -> Void)?
     var onTestCurlPreloadStateChange: ((Bool) -> Void)?
+    /// Fires true once the interactive overlay controller exists (so taps and
+    /// turns are handled by Test Curl), false when it's torn down. Lets the host
+    /// keep a fallback tap layer live during the cold-open preload (~first
+    /// render), so the reader isn't unresponsive for a few seconds.
+    var onTestCurlReadyChange: ((Bool) -> Void)?
 
     private(set) var isAnimating: Bool = false
     private var isTestCurlEnabled = false
@@ -150,6 +155,7 @@ final class PageTurnAnimator {
         controller.removeFromParent()
         testCurlController = nil
         isPreparingTestCurl = false
+        onTestCurlReadyChange?(false)
     }
 
     private func prepareTestCurlOverlay() async {
@@ -214,6 +220,7 @@ final class PageTurnAnimator {
             controller.didMove(toParent: hostController)
             testCurlController = controller
         }
+        onTestCurlReadyChange?(true)
     }
 
     private func preloadAdjacentSnapshot(direction: Int, navigator nav: EPUBNavigatorViewController) async -> UIImage? {
