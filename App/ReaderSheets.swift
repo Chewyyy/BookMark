@@ -176,13 +176,13 @@ struct ReaderSettingsSheet: View {
 
     private var layoutGroup: some View {
         SettingsGroup(title: "Page Turn") {
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8) {
+            HStack(spacing: 6) {
                 ForEach(PageAnimation.displayCases, id: \.self) { animation in
                     pageTurnButton(animation)
                 }
             }
 
-            Text("Slide uses Readium's native page advance. Fade and Realistic use BookMark's transition layer. Test Curl uses a stricter snapshot-only UIKit/Core Animation turn. Tap the selected option again for no animation.")
+            Text("Slide uses Readium's native page advance. Fade and Rigid use BookMark's transition layer. Realistic uses UIKit's built-in page curl. Tap the selected option again for no animation.")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .padding(.top, 4)
@@ -245,15 +245,18 @@ struct ReaderSettingsSheet: View {
         return Button {
             model.settings.pageAnim = isSelected ? .none : animation
         } label: {
-            VStack(spacing: 6) {
+            VStack(spacing: 4) {
                 Image(systemName: animation.iconName)
-                    .font(.system(size: 16, weight: .bold))
+                    .font(.system(size: 15, weight: .bold))
+                    .frame(height: 17)
                 Text(animation.label)
-                    .font(.system(size: 12, weight: .heavy))
+                    .font(.system(size: 10, weight: .heavy))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
             }
             .foregroundStyle(isSelected ? model.theme.accentColor : model.theme.foregroundColor)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 11)
+            .frame(maxWidth: .infinity, minHeight: 54)
+            .padding(.vertical, 7)
             .background(isSelected ? model.theme.accentColor.opacity(0.20) : Color.gray.opacity(0.16))
             .overlay(
                 RoundedRectangle(cornerRadius: 14)
@@ -286,15 +289,15 @@ private extension PageCountMode {
 }
 
 private extension PageAnimation {
-    static var displayCases: [PageAnimation] { [.slide, .fade, .curl] }
+    static var displayCases: [PageAnimation] { [.slide, .fade, .curl, .testCurl] }
 
     var label: String {
         switch self {
         case .slide: return "Slide"
         case .fade: return "Fade"
-        case .rigid: return "Realistic"
-        case .curl: return "Realistic"
-        case .testCurl: return "Test Curl"
+        case .rigid: return "Rigid"
+        case .curl: return "Rigid"
+        case .testCurl: return "Realistic"
         case .none: return "None"
         }
     }
@@ -304,7 +307,7 @@ private extension PageAnimation {
         case .slide: return "arrow.left.and.right"
         case .fade: return "circle.lefthalf.filled"
         case .rigid: return "rectangle.portrait.rotate"
-        case .curl: return "text.page.badge.magnifyingglass"
+        case .curl: return "book.pages"
         case .testCurl: return "rectangle.portrait.on.rectangle.portrait.angled"
         case .none: return "nosign"
         }

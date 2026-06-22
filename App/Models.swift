@@ -375,7 +375,7 @@ struct ReaderSettings: Codable, Hashable {
     var lineHeight: Double = 1.6
     var margins: LayoutMargin = .normal
     var justify: Bool = false
-    var pageAnim: PageAnimation = .slide
+    var pageAnim: PageAnimation = .testCurl
     var swipe: Bool = true
     var keepAwake: Bool = true
     var brightness: Int = 100
@@ -424,7 +424,7 @@ struct ReaderSettings: Codable, Hashable {
         lineHeight = try c.decodeIfPresent(Double.self, forKey: .lineHeight) ?? 1.6
         margins = try c.decodeIfPresent(LayoutMargin.self, forKey: .margins) ?? .normal
         justify = try c.decodeIfPresent(Bool.self, forKey: .justify) ?? false
-        pageAnim = try c.decodeIfPresent(PageAnimation.self, forKey: .pageAnim) ?? .slide
+        pageAnim = try c.decodeIfPresent(PageAnimation.self, forKey: .pageAnim) ?? .testCurl
         if pageAnim == .rigid { pageAnim = .curl }
         swipe = try c.decodeIfPresent(Bool.self, forKey: .swipe) ?? true
         keepAwake = try c.decodeIfPresent(Bool.self, forKey: .keepAwake) ?? true

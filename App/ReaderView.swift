@@ -160,6 +160,8 @@ struct ReaderView: View {
                     pendingChapterJump: pendingChapterJump,
                     diagnosticPageTurnRequest: diagnosticPageTurnRequest,
                     highlights: store.highlights[bookId] ?? [],
+                    testCurlPageLabels: model.testCurlPageLabels,
+                    showsChrome: showChrome,
                     onLocationChange: { location in
                         model.updateReadiumLocation(location)
                         captureSessionStartIfNeeded()
@@ -209,6 +211,8 @@ struct ReaderView: View {
                     pendingChapterJump: hiddenPaginationPendingChapterJump,
                     diagnosticPageTurnRequest: nil,
                     highlights: [],
+                    testCurlPageLabels: nil,
+                    showsChrome: false,
                     onLocationChange: { _ in },
                     onChapterPageChange: handleHiddenPaginationPageState,
                     onPageTurn: { _ in },
@@ -245,7 +249,7 @@ struct ReaderView: View {
 
                 readerBottomChrome
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
-            } else if model.epubURL != nil {
+            } else if model.epubURL != nil, model.settings.pageAnim != .testCurl {
                 hiddenPageIndicator
                     .transition(.opacity)
             }
@@ -1859,6 +1863,30 @@ final class ReaderModel: ObservableObject {
             return "Page \(rawDisplayPage)"
         }
         return "Page \(estimatedBookPage)"
+    }
+
+    var testCurlPageLabels: TestCurlPageLabels {
+        if epubURL != nil {
+            guard readiumDisplayIsReady else { return .empty }
+            if let label = readiumPublisherPageLabel,
+               let page = Int(label.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                return TestCurlPageLabels(currentPage: page, totalPages: readiumPublisherPageTotal)
+            }
+            if settings.pageCountMode == .viewportChapter,
+               let state = readiumChapterPageState {
+                return TestCurlPageLabels(currentPage: state.currentPage, totalPages: state.totalPages)
+            }
+            if settings.pageCountMode == .paginatedBook,
+               let page = paginatedBookCurrentPage {
+                return TestCurlPageLabels(currentPage: page, totalPages: paginatedSettings?.totalPages)
+            }
+            if settings.pageCountMode == .viewportBook,
+               let page = viewportBookCurrentPage {
+                return TestCurlPageLabels(currentPage: page, totalPages: viewportBookPageTotal)
+            }
+            return TestCurlPageLabels(currentPage: rawDisplayPage, totalPages: displayPageTotal)
+        }
+        return TestCurlPageLabels(currentPage: estimatedBookPage, totalPages: estimatedBookPages)
     }
 
     var displayPageTotal: Int {

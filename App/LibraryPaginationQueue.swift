@@ -49,6 +49,8 @@ struct LibraryPaginationQueueView: View {
                     pendingChapterJump: pendingChapterJump,
                     diagnosticPageTurnRequest: nil,
                     highlights: [],
+                    testCurlPageLabels: nil,
+                    showsChrome: false,
                     onLocationChange: { _ in },
                     onChapterPageChange: handleChapterPageState,
                     onPageTurn: { _ in },

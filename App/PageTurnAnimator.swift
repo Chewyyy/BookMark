@@ -19,10 +19,21 @@ import ReadiumShared
 @MainActor
 final class PageTurnAnimator {
     weak var hostView: UIView?
+    weak var hostController: UIViewController?
     weak var navigatorController: EPUBNavigatorViewController?
     var palette: ReaderThemePalette.Palette
+    var latestLocationProvider: (() -> String)?
+    var canPrepareTestCurl: (() -> Bool)?
+    private var testCurlPageLabels: TestCurlPageLabels?
+    var showsTestCurlPageLabel = true
+    var onTestCurlPageTurn: ((Int) -> Void)?
+    var onTestCurlCenterTap: (() -> Void)?
+    var onTestCurlPreloadStateChange: ((Bool) -> Void)?
 
     private(set) var isAnimating: Bool = false
+    private var isTestCurlEnabled = false
+    private var isPreparingTestCurl = false
+    private weak var testCurlController: TestCurlPageViewController?
 
     // Wait long enough after navigation for WKWebView to paint the new page.
     private static let renderSettleNanoseconds: UInt64 = 90_000_000
@@ -64,9 +75,201 @@ final class PageTurnAnimator {
         self.palette = palette
     }
 
-    func attach(hostView: UIView, navigator: EPUBNavigatorViewController) {
+    func attach(hostView: UIView, hostController: UIViewController, navigator: EPUBNavigatorViewController) {
         self.hostView = hostView
+        self.hostController = hostController
         self.navigatorController = navigator
+    }
+
+    func updateTestCurlPageLabels(_ labels: TestCurlPageLabels?) {
+        guard !isAnimating else { return }
+        let needsInitialLabelRefresh = showsTestCurlPageLabel
+            && testCurlController != nil
+            && testCurlPageLabels?.current == nil
+            && labels?.current != nil
+        testCurlPageLabels = labels
+        if needsInitialLabelRefresh, !isPreparingTestCurl {
+            refreshTestCurlIfReady()
+        }
+    }
+
+    func updateTestCurlPageLabelVisibility(_ isVisible: Bool) {
+        let wasVisible = showsTestCurlPageLabel
+        showsTestCurlPageLabel = isVisible
+        guard isVisible != wasVisible else { return }
+        guard isVisible, testCurlController != nil, testCurlPageLabels?.current != nil, !isAnimating, !isPreparingTestCurl else { return }
+        refreshTestCurlIfReady()
+    }
+
+    func updatePalette(_ palette: ReaderThemePalette.Palette) {
+        let didChangeBackground = self.palette.bg != palette.bg
+        self.palette = palette
+        guard didChangeBackground else { return }
+        testCurlController?.updateColors(backgroundColor: palette.uiBackgroundColor, labelColor: palette.uiForegroundColor)
+        guard isTestCurlEnabled else { return }
+        if testCurlController != nil {
+            removeTestCurlOverlay()
+        }
+        refreshTestCurlIfReady()
+    }
+
+    func setTestCurlEnabled(_ enabled: Bool) {
+        guard enabled != isTestCurlEnabled || (enabled && testCurlController == nil && !isPreparingTestCurl) else { return }
+        isTestCurlEnabled = enabled
+        if enabled {
+            refreshTestCurlIfReady()
+        } else {
+            removeTestCurlOverlay()
+        }
+    }
+
+    func refreshTestCurlIfReady() {
+        guard isTestCurlEnabled, !isPreparingTestCurl else { return }
+        guard canPrepareTestCurl?() ?? true else { return }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 160_000_000)
+            guard self.isTestCurlEnabled, !self.isPreparingTestCurl else { return }
+            guard self.canPrepareTestCurl?() ?? true else { return }
+            await self.prepareTestCurlOverlay()
+        }
+    }
+
+    private func scheduleTestCurlRetry() {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 220_000_000)
+            guard self.isTestCurlEnabled, !self.isPreparingTestCurl else { return }
+            guard self.canPrepareTestCurl?() ?? true else { return }
+            await self.prepareTestCurlOverlay()
+        }
+    }
+
+    private func removeTestCurlOverlay() {
+        guard let controller = testCurlController else { return }
+        controller.willMove(toParent: nil)
+        controller.view.removeFromSuperview()
+        controller.removeFromParent()
+        testCurlController = nil
+        isPreparingTestCurl = false
+    }
+
+    private func prepareTestCurlOverlay() async {
+        guard isTestCurlEnabled, !isPreparingTestCurl else { return }
+        guard let hostView, let hostController, let nav = navigatorController else { return }
+        isPreparingTestCurl = true
+        defer { isPreparingTestCurl = false }
+
+        logTestCurl("prepareOverlay locator=\(latestLocationDescription())")
+        guard !containsActiveActivityIndicator(in: nav.view) else {
+            logTestCurl("prepareOverlay skipped=activeLoadingIndicator")
+            scheduleTestCurlRetry()
+            return
+        }
+        guard let currentImage = captureImage(of: nav.view) else {
+            logTestCurl("prepareOverlay currentSnapshotAvailable=false")
+            return
+        }
+        let pageLabels = showsTestCurlPageLabel ? (testCurlPageLabels ?? .empty) : .empty
+        let visibleCurrentImage = TestCurlPageViewController.makePageImage(
+            from: currentImage,
+            pageLabel: pageLabels.current,
+            labelColor: palette.uiForegroundColor
+        )
+
+        let cover = UIImageView(image: visibleCurrentImage)
+        cover.frame = hostView.bounds
+        cover.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        cover.isUserInteractionEnabled = false
+        cover.contentMode = .scaleToFill
+        cover.backgroundColor = palette.uiBackgroundColor
+        cover.layer.zPosition = 20_000
+        hostView.addSubview(cover)
+        defer { cover.removeFromSuperview() }
+
+        onTestCurlPreloadStateChange?(true)
+        defer { onTestCurlPreloadStateChange?(false) }
+        let nextImage = await preloadAdjacentSnapshot(direction: 1, navigator: nav)
+        let previousImage = await preloadAdjacentSnapshot(direction: -1, navigator: nav)
+        logTestCurl("prepareOverlay previousAvailable=\(previousImage != nil) nextAvailable=\(nextImage != nil) locatorAfterPreload=\(latestLocationDescription())")
+
+        if let controller = testCurlController {
+            controller.updateSnapshots(currentImage: currentImage, previousImage: previousImage, nextImage: nextImage, pageLabels: pageLabels)
+        } else {
+            let controller = TestCurlPageViewController(
+                currentImage: currentImage,
+                previousImage: previousImage,
+                nextImage: nextImage,
+                backgroundColor: palette.uiBackgroundColor,
+                labelColor: palette.uiForegroundColor,
+                pageLabels: pageLabels,
+                onCenterTap: { [weak self] in
+                    self?.onTestCurlCenterTap?()
+                }
+            ) { [weak self] direction, completed in
+                self?.handleTestCurlTransition(direction: direction, completed: completed)
+            }
+            controller.view.frame = hostView.bounds
+            controller.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            hostController.addChild(controller)
+            hostView.addSubview(controller.view)
+            controller.didMove(toParent: hostController)
+            testCurlController = controller
+        }
+    }
+
+    private func preloadAdjacentSnapshot(direction: Int, navigator nav: EPUBNavigatorViewController) async -> UIImage? {
+        let moved: Bool
+        if direction > 0 {
+            moved = await nav.goForward(options: NavigatorGoOptions(animated: false))
+        } else {
+            moved = await nav.goBackward(options: NavigatorGoOptions(animated: false))
+        }
+        guard moved else {
+            logTestCurl("preload direction=\(direction) available=false")
+            return nil
+        }
+
+        try? await Task.sleep(nanoseconds: Self.renderSettleNanoseconds)
+        let image = captureImage(of: nav.view)
+        if direction > 0 {
+            _ = await nav.goBackward(options: NavigatorGoOptions(animated: false))
+        } else {
+            _ = await nav.goForward(options: NavigatorGoOptions(animated: false))
+        }
+        try? await Task.sleep(nanoseconds: Self.renderSettleNanoseconds)
+        logTestCurl("preload direction=\(direction) available=\(image != nil)")
+        return image
+    }
+
+    private func handleTestCurlTransition(direction: Int, completed: Bool) {
+        guard completed, direction != 0 else {
+            logTestCurl("transitionCompleted=false locator=\(latestLocationDescription())")
+            return
+        }
+        guard !isAnimating, let nav = navigatorController else { return }
+
+        isAnimating = true
+        turnState = .completingTurn
+        testCurlPageLabels = testCurlPageLabels?.advanced(by: direction)
+        logTestCurl("transitionCompleted=true requestedDirection=\(direction) locatorBeforeSync=\(latestLocationDescription())")
+        onTestCurlPageTurn?(direction)
+
+        Task { @MainActor [weak self, weak nav] in
+            guard let self, let nav else { return }
+            let moved: Bool
+            if direction > 0 {
+                moved = await nav.goForward(options: NavigatorGoOptions(animated: false))
+            } else {
+                moved = await nav.goBackward(options: NavigatorGoOptions(animated: false))
+            }
+            logTestCurl("readiumSyncMoved=\(moved) locatorAfterSync=\(latestLocationDescription())")
+            if !moved {
+                self.onTestCurlPageTurn?(0)
+            }
+            try? await Task.sleep(nanoseconds: Self.renderSettleNanoseconds)
+            self.isAnimating = false
+            self.turnState = .idle
+            await self.prepareTestCurlOverlay()
+        }
     }
 
     // MARK: - Tap-triggered turns
@@ -76,6 +279,10 @@ final class PageTurnAnimator {
         guard !isAnimating, session == nil else { return false }
         guard let hostView, let nav = navigatorController else { return false }
         guard mode == .curl || mode == .rigid || mode == .testCurl else { return false }
+
+        if mode == .testCurl {
+            return await performUIKitTestCurlTurn(direction: direction)
+        }
 
         isAnimating = true
         turnState = .preparingTurn
@@ -133,6 +340,25 @@ final class PageTurnAnimator {
         return true
     }
 
+    private func performUIKitTestCurlTurn(direction: Int) async -> Bool {
+        guard isTestCurlEnabled else { return false }
+        if testCurlController == nil {
+            await prepareTestCurlOverlay()
+        }
+        guard let testCurlController else { return false }
+        logTestCurl("programmaticTurn requestedDirection=\(direction) locator=\(latestLocationDescription())")
+        testCurlController.startProgrammaticTurn(direction: direction)
+        return true
+    }
+
+    private func latestLocationDescription() -> String {
+        latestLocationProvider?() ?? "unavailable"
+    }
+
+    private func logTestCurl(_ message: String) {
+        print("[TestCurl] \(message)")
+    }
+
     // MARK: - Interactive curl (pan-driven)
 
     /// Returns true if a session was started. Caller should subsequently feed
@@ -141,18 +367,17 @@ final class PageTurnAnimator {
     func beginInteractiveCurl(direction: Int, mode: PageAnimation = .curl) -> Bool {
         guard !isAnimating, session == nil else { return false }
         guard let hostView, let nav = navigatorController else { return false }
-        guard mode == .curl || mode == .testCurl else { return false }
+        guard mode == .curl else { return false }
         guard let image = captureImage(of: nav.view) else { return false }
 
-        let snapshotOnly = mode == .testCurl
         let container = UIView(frame: hostView.bounds)
         container.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         container.isUserInteractionEnabled = false
-        container.backgroundColor = snapshotOnly ? palette.uiBackgroundColor : .clear
+        container.backgroundColor = .clear
         hostView.addSubview(container)
 
-        let strips = snapshotOnly ? [] : createStripLayers(image: image, direction: direction, in: container)
-        let overlays = snapshotOnly ? createDetachedCurlOverlays() : createCurlOverlays(in: container, direction: direction)
+        let strips = createStripLayers(image: image, direction: direction, in: container)
+        let overlays = createCurlOverlays(in: container, direction: direction)
 
         // Keep the outgoing snapshot above the strips until Readium has rendered
         // the destination page underneath or until Test Curl has captured it.
@@ -175,7 +400,7 @@ final class PageTurnAnimator {
             foldHighlight: overlays.highlight,
             underShadow: overlays.under,
             image: image,
-            snapshotOnly: snapshotOnly,
+            snapshotOnly: false,
             metalCurlView: nil,
             navigationCompleted: false,
             navigationSucceeded: false,
@@ -197,7 +422,6 @@ final class PageTurnAnimator {
                 success = await nav.goBackward(options: NavigatorGoOptions(animated: false))
             }
             try? await Task.sleep(nanoseconds: Self.renderSettleNanoseconds)
-            let destinationImage = snapshotOnly ? self?.captureImage(of: nav.view) : nil
             await MainActor.run {
                 guard let self else { return }
                 guard var current = self.session, current.direction == direction else { return }
@@ -205,29 +429,6 @@ final class PageTurnAnimator {
                 current.navigationSucceeded = success
                 self.session = current
                 if success {
-                    if snapshotOnly {
-                        guard let destinationImage,
-                              let metalCurlView = MetalPageCurlView(
-                                frame: current.container.bounds,
-                                currentImage: current.image,
-                                destinationImage: destinationImage,
-                                direction: current.direction,
-                                palette: self.palette
-                              ) else {
-                            self.session = current
-                            self.endInteractiveCurl(commit: false)
-                            return
-                        }
-                        metalCurlView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-                        current.container.insertSubview(metalCurlView, at: 0)
-                        metalCurlView.update(
-                            progress: current.lastProgress,
-                            verticalPull: current.lastVerticalPull,
-                            touchY: current.lastTouchY
-                        )
-                        current.metalCurlView = metalCurlView
-                        self.session = current
-                    }
                     self.turnState = direction > 0 ? .draggingForward : .draggingBackward
                     current.coverFallback?.removeFromSuperview()
                     self.session?.coverFallback = nil
@@ -427,6 +628,13 @@ final class PageTurnAnimator {
 
     // MARK: - Strip / overlay construction
 
+    private func containsActiveActivityIndicator(in view: UIView) -> Bool {
+        if let indicator = view as? UIActivityIndicatorView, indicator.isAnimating, !indicator.isHidden, indicator.alpha > 0.01 {
+            return true
+        }
+        return view.subviews.contains { containsActiveActivityIndicator(in: $0) }
+    }
+
     private func captureImage(of view: UIView?) -> UIImage? {
         guard let view, view.bounds.width > 1, view.bounds.height > 1 else { return nil }
         let format = UIGraphicsImageRendererFormat()
@@ -436,11 +644,13 @@ final class PageTurnAnimator {
         format.scale = scale > 0 ? scale : 2
         format.opaque = true
         let renderer = UIGraphicsImageRenderer(bounds: view.bounds, format: format)
-        return renderer.image { _ in
-            // afterScreenUpdates: true forces WKWebView (used by Readium) to
-            // flush its composited layer before we capture, so the snapshot
-            // contains the live page contents.
-            view.drawHierarchy(in: view.bounds, afterScreenUpdates: true)
+        return renderer.image { context in
+            // drawHierarchy(afterScreenUpdates:) can force UIKit to validate
+            // Readium's nested child-controller tree while the navigator is
+            // embedded in our host controller, which can raise an NSException.
+            // CALayer rendering is less aggressive and keeps Test Curl snapshot
+            // capture from disturbing Readium containment.
+            view.layer.render(in: context.cgContext)
         }
     }
 
@@ -796,6 +1006,15 @@ extension ReaderThemePalette.Palette {
             red: channel(bg, 16),
             green: channel(bg, 8),
             blue: channel(bg, 0),
+            alpha: 1
+        )
+    }
+
+    var uiForegroundColor: UIColor {
+        UIColor(
+            red: channel(fg, 16),
+            green: channel(fg, 8),
+            blue: channel(fg, 0),
             alpha: 1
         )
     }

@@ -49,6 +49,30 @@ enum EPUBImporter {
         return summary
     }
 
+    /// Imports the onboarding sample EPUB shipped in the asset catalog (data
+    /// set `OnboardingBook`). Safe to call repeatedly — `importFiles` skips by
+    /// content fingerprint, so a reader who already has the sample won't get a
+    /// duplicate. Returns the book id of the sample if it is present afterward.
+    @MainActor
+    @discardableResult
+    static func importBundledSample(named assetName: String = "OnboardingBook", into store: Store) async -> String? {
+        guard let data = NSDataAsset(name: assetName)?.data else { return nil }
+        let fingerprint = Store.contentFingerprint(for: data)
+        if let existing = store.books.first(where: { $0.contentFingerprint == fingerprint }) {
+            return existing.id
+        }
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("onboarding-sample-\(UUID().uuidString).epub")
+        do {
+            try data.write(to: tmp, options: .atomic)
+            _ = await importFiles([tmp], into: store)
+            try? FileManager.default.removeItem(at: tmp)
+        } catch {
+            return nil
+        }
+        return store.books.first(where: { $0.contentFingerprint == fingerprint })?.id
+    }
+
     @MainActor
     static func rescanFolder(_ folder: URL, into store: Store) async -> ImportSummary {
         let needsStop = folder.startAccessingSecurityScopedResource()

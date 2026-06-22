@@ -226,7 +226,7 @@ enum BackupMigration {
             case "rigid", "curl": s.pageAnim = .curl
             case "testCurl": s.pageAnim = .testCurl
             case "none": s.pageAnim = .none
-            default: s.pageAnim = .slide
+            default: s.pageAnim = .testCurl
             }
         }
         if let v = raw["swipe"] as? Bool { s.swipe = v }

@@ -18,14 +18,16 @@ struct BookMarkApp: App {
                     // anything missing — each parse runs on a utility-priority
                     // background task so launch isn't blocked.
                     EPUBImporter.backfillWordCounts(into: store)
-                    await ReadingReminderScheduler.reschedule(for: store, requestAuthorizationIfNeeded: true)
+                    // Defer the notification permission prompt until onboarding
+                    // has run — the reminder step asks for it in context instead.
+                    await ReadingReminderScheduler.reschedule(for: store, requestAuthorizationIfNeeded: store.hasCompletedOnboarding)
                 }
                 .onChange(of: scenePhase) { _, phase in
                     Task {
                         switch phase {
                         case .active:
                             await scanWatchedFolder()
-                            await ReadingReminderScheduler.reschedule(for: store, requestAuthorizationIfNeeded: true)
+                            await ReadingReminderScheduler.reschedule(for: store, requestAuthorizationIfNeeded: store.hasCompletedOnboarding)
                         case .background:
                             await store.refreshSharedWidgetSnapshot()
                         default:

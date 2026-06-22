@@ -66,6 +66,13 @@ struct RootView: View {
         } message: {
             Text(relinkError ?? "")
         }
+        .fullScreenCover(isPresented: Binding(
+            get: { store.didHydrate && !store.hasCompletedOnboarding },
+            set: { _ in }
+        )) {
+            OnboardingView()
+                .environmentObject(store)
+        }
     }
 
     private func openBook(_ id: String) {

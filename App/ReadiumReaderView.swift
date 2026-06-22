@@ -65,6 +65,8 @@ struct ReadiumReaderContainer: View {
     let pendingChapterJump: ReadiumChapterJump?
     let diagnosticPageTurnRequest: ReadiumDiagnosticPageTurnRequest?
     let highlights: [Highlight]
+    let testCurlPageLabels: TestCurlPageLabels?
+    let showsChrome: Bool
     let onLocationChange: (ReadiumLocation) -> Void
     let onChapterPageChange: (ReadiumChapterPageState?) -> Void
     let onPageTurn: (Int) -> Void
@@ -90,10 +92,22 @@ struct ReadiumReaderContainer: View {
                     pendingLocatorJSON: pendingLocatorJSON,
                     pendingChapterJump: pendingChapterJump,
                     highlights: highlights,
+                    testCurlPageLabels: testCurlPageLabels,
+                    showsChrome: showsChrome,
                     positionsByResource: loader.positionsByResource,
                     publisherPages: loader.publisherPages,
-                    onLocationChange: onLocationChange,
-                    onChapterPageChange: onChapterPageChange,
+                    onLocationChange: { location in
+                        guard !bridge.isSuppressingTestCurlLocationUpdates else { return }
+                        bridge.latestLocation = location
+                        onLocationChange(location)
+                        bridge.refreshTestCurlIfNeeded()
+                    },
+                    onChapterPageChange: { state in
+                        guard !bridge.isSuppressingTestCurlLocationUpdates else { return }
+                        onChapterPageChange(state)
+                    },
+                    onPageTurn: onPageTurn,
+                    onCenterTap: onCenterTap,
                     onHighlightSelection: onHighlightSelection,
                     onInitFailure: { msg in loader.error = msg; loader.publication = nil }
                 )
@@ -149,9 +163,12 @@ struct ReadiumReaderContainer: View {
                         }
                 )
             }
+            .allowsHitTesting(settings.pageAnim != .testCurl)
             .ignoresSafeArea()
         }
         .task(id: epubURL) {
+            bridge.latestLocation = nil
+            bridge.isSuppressingTestCurlLocationUpdates = false
             onPublicationReady(nil)
             await loader.open(epubURL: epubURL, initialProgress: initialProgress)
             onPublicationReady(loader.publication)
@@ -178,9 +195,14 @@ struct ReadiumReaderContainer: View {
         }
         if animation == .curl || animation == .rigid || animation == .testCurl {
             guard !bridge.isAnimatingPageTurn else { return }
-            onPageTurn(direction)
+            if animation != .testCurl {
+                onPageTurn(direction)
+            }
             Task { @MainActor in
-                _ = await bridge.performAnimatedTurn(direction: direction, mode: animation)
+                let moved = await bridge.performAnimatedTurn(direction: direction, mode: animation)
+                if !moved, animation != .testCurl {
+                    onPageTurn(0)
+                }
             }
             return
         }
@@ -240,7 +262,11 @@ struct ReadiumReaderContainer: View {
         guard abs(dx) > 6 else { return }
 
         let animation = settings.pageAnim
-        guard animation == .curl || animation == .testCurl else { return }
+        // Test Curl intentionally does not enter this SwiftUI-driven interactive
+        // session. UIKit's UIPageViewController.pageCurl owns its own gesture
+        // pipeline, so this prototype triggers it after a threshold swipe/tap;
+        // a truly cancellable UIKit curl would need a persistent UIKit overlay.
+        guard animation == .curl else { return }
 
         let direction = dx < 0 ? 1 : -1
         let rawProgress = abs(dx) / max(size.width * 0.72, 1)
@@ -273,7 +299,7 @@ struct ReadiumReaderContainer: View {
 
         let animation = settings.pageAnim
 
-        if animation == .curl || animation == .testCurl {
+        if animation == .curl {
             // Resolve interactive curl session if one is open.
             if let dragDir = interactiveCurlDirection {
                 interactiveCurlDirection = nil
@@ -337,8 +363,19 @@ struct ReadiumReaderContainer: View {
 final class ReadiumNavigatorBridge: ObservableObject {
     weak var navigator: EPUBNavigatorViewController?
     weak var animator: PageTurnAnimator?
+    var latestLocation: ReadiumLocation?
+    var isSuppressingTestCurlLocationUpdates = false
 
     var isAnimatingPageTurn: Bool { animator?.isAnimating ?? false }
+
+    var latestLocationDescription: String {
+        guard let latestLocation else { return "unavailable" }
+        let position = latestLocation.bookPosition.map(String.init) ?? "nil"
+        let total = latestLocation.bookPositionTotal.map(String.init) ?? "nil"
+        let chapter = latestLocation.resourceIndex.map(String.init) ?? "nil"
+        let progress = String(format: "%.5f", latestLocation.totalProgress)
+        return "progress=\(progress) position=\(position)/\(total) resource=\(chapter)"
+    }
 
     func goForward(animated: Bool) {
         guard let navigator else { return }
@@ -377,6 +414,10 @@ final class ReadiumNavigatorBridge: ObservableObject {
 
     func endInteractiveCurl(commit: Bool) {
         animator?.endInteractiveCurl(commit: commit)
+    }
+
+    func refreshTestCurlIfNeeded() {
+        animator?.refreshTestCurlIfReady()
     }
 }
 
@@ -507,10 +548,14 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
     let pendingLocatorJSON: String?
     let pendingChapterJump: ReadiumChapterJump?
     let highlights: [Highlight]
+    let testCurlPageLabels: TestCurlPageLabels?
+    let showsChrome: Bool
     let positionsByResource: [[Locator]]
     let publisherPages: [ReadiumPublisherPage]
     let onLocationChange: (ReadiumLocation) -> Void
     let onChapterPageChange: (ReadiumChapterPageState?) -> Void
+    let onPageTurn: (Int) -> Void
+    let onCenterTap: () -> Void
     let onHighlightSelection: (String, String) -> Void
     let onInitFailure: (String) -> Void
     @Environment(\.horizontalSizeClass) private var hSizeClass
@@ -555,6 +600,23 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
             context.coordinator.lastPreferences = readiumPreferences(for: settings)
             bridge.navigator = navigator
             bridge.animator = host.pageTurnAnimator
+            host.pageTurnAnimator.updateTestCurlPageLabelVisibility(!showsChrome)
+            host.pageTurnAnimator.updateTestCurlPageLabels(testCurlPageLabels)
+            host.pageTurnAnimator.latestLocationProvider = { [weak bridge] in
+                bridge?.latestLocationDescription ?? "unavailable"
+            }
+            host.pageTurnAnimator.canPrepareTestCurl = { [weak bridge] in
+                bridge?.latestLocation != nil
+            }
+            host.pageTurnAnimator.onTestCurlPageTurn = { direction in
+                onPageTurn(direction)
+            }
+            host.pageTurnAnimator.onTestCurlCenterTap = {
+                onCenterTap()
+            }
+            host.pageTurnAnimator.onTestCurlPreloadStateChange = { [weak bridge] isPreloading in
+                bridge?.isSuppressingTestCurlLocationUpdates = isPreloading
+            }
             context.coordinator.applyHighlights(highlights)
             return host
         } catch {
@@ -576,7 +638,25 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
         context.coordinator.publication = publication
         bridge.navigator = navigator
         bridge.animator = host.pageTurnAnimator
-        host.pageTurnAnimator.palette = ReaderThemePalette.resolve(settings.theme)
+        host.pageTurnAnimator.updateTestCurlPageLabelVisibility(!showsChrome)
+        host.pageTurnAnimator.updateTestCurlPageLabels(testCurlPageLabels)
+        host.pageTurnAnimator.latestLocationProvider = { [weak bridge] in
+            bridge?.latestLocationDescription ?? "unavailable"
+        }
+        host.pageTurnAnimator.canPrepareTestCurl = { [weak bridge] in
+            bridge?.latestLocation != nil
+        }
+        host.pageTurnAnimator.onTestCurlPageTurn = { direction in
+            onPageTurn(direction)
+        }
+        host.pageTurnAnimator.onTestCurlCenterTap = {
+            onCenterTap()
+        }
+        host.pageTurnAnimator.onTestCurlPreloadStateChange = { [weak bridge] isPreloading in
+            bridge?.isSuppressingTestCurlLocationUpdates = isPreloading
+        }
+        host.pageTurnAnimator.updatePalette(ReaderThemePalette.resolve(settings.theme))
+        host.pageTurnAnimator.setTestCurlEnabled(settings.pageAnim == .testCurl)
         context.coordinator.applyHighlights(highlights)
         if context.coordinator.lastPreferences != preferences {
             context.coordinator.lastPreferences = preferences
@@ -886,18 +966,27 @@ final class ReaderNavigatorHostViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        addChild(navigator)
-        view.addSubview(navigator.view)
-        navigator.view.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            navigator.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            navigator.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            navigator.view.topAnchor.constraint(equalTo: view.topAnchor),
-            navigator.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-        ])
-        navigator.didMove(toParent: self)
+        if navigator.parent !== self {
+            if navigator.parent != nil {
+                navigator.willMove(toParent: nil)
+                navigator.view.removeFromSuperview()
+                navigator.removeFromParent()
+            }
+            addChild(navigator)
+            view.addSubview(navigator.view)
+            navigator.view.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                navigator.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                navigator.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                navigator.view.topAnchor.constraint(equalTo: view.topAnchor),
+                navigator.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            ])
+            navigator.didMove(toParent: self)
+        } else if navigator.view.superview !== view {
+            view.insertSubview(navigator.view, at: 0)
+        }
         // The animator places snapshot overlays into this view ABOVE the navigator.
-        pageTurnAnimator.attach(hostView: view, navigator: navigator)
+        pageTurnAnimator.attach(hostView: view, hostController: self, navigator: navigator)
     }
 
     @objc func addBookMarkHighlight(_ sender: Any?) {

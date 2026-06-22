@@ -20,7 +20,12 @@ final class Store: ObservableObject {
     @Published var backupFolderName: String?
     @Published var didHydrate = false
     @Published var libraryPaginationStatus: LibraryPaginationStatus?
+    /// Drives the first-launch onboarding cover. Stored in `UserDefaults` (a UI
+    /// gate, not user content) so it survives independently of the JSON store and
+    /// never round-trips through the debounced snapshot machinery.
+    @Published var hasCompletedOnboarding: Bool = UserDefaults.standard.bool(forKey: Store.onboardingDoneKey)
 
+    static let onboardingDoneKey = "bookmark.hasCompletedOnboarding"
     static let appGroupId = "group.com.bdeavilla.bookmark"
     static let usesAppGroupStorage = false
     private static var cachedStoreDirectory: URL?
@@ -85,8 +90,21 @@ final class Store: ObservableObject {
                 }
             }
         }
+        // Existing installs that already hold a library predate onboarding —
+        // mark it done so an app update never drops returning readers back into
+        // the first-launch tutorial.
+        if !hasCompletedOnboarding, !books.isEmpty || !sessions.isEmpty {
+            completeOnboarding()
+        }
         didHydrate = true
         scheduleSave()
+    }
+
+    /// Flip the first-launch gate once the user finishes (or skips) onboarding.
+    func completeOnboarding() {
+        guard !hasCompletedOnboarding else { return }
+        hasCompletedOnboarding = true
+        UserDefaults.standard.set(true, forKey: Self.onboardingDoneKey)
     }
 
     func scheduleSave() {
