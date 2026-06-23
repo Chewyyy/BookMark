@@ -337,7 +337,7 @@ enum ReaderFont: String, Codable, CaseIterable, Hashable {
 }
 
 enum PageAnimation: String, Codable, CaseIterable, Hashable {
-    case slide, fade, rigid, curl, testCurl, none
+    case slide, fade, rigid, curl, testCurl, scroll, none
 }
 
 /// How the bottom status bar's "Page X of Y" should be calculated.

@@ -957,6 +957,18 @@ struct SessionEditorSheet: View {
                     field("Pages", text: $pagesText)
                 }
                 .padding(.bottom, 10)
+                .onChange(of: pagesText) { _, newValue in
+                    guard let wpp = session.wordsPerPage, wpp > 0,
+                          let pages = Int(newValue), pages > 0 else { return }
+                    let mins = max(1, Int(minutesText) ?? (session.secs / 60))
+                    wordsPerMinuteText = "\(Int(ceil(Double(pages * wpp) / Double(mins))))"
+                }
+                .onChange(of: minutesText) { _, newValue in
+                    guard let wpp = session.wordsPerPage, wpp > 0,
+                          let pages = Int(pagesText), pages > 0,
+                          let mins = Int(newValue), mins > 0 else { return }
+                    wordsPerMinuteText = "\(Int(ceil(Double(pages * wpp) / Double(mins))))"
+                }
 
                 field("WPM", text: $wordsPerMinuteText)
                     .padding(.bottom, 10)
@@ -1077,7 +1089,16 @@ struct SessionEditorSheet: View {
         s.secs = max(0, mins * 60)
         s.end = Calendar.current.date(byAdding: .second, value: s.secs, to: startDate)
         s.pages = Int(pagesText)
-        if let wpm = Double(wordsPerMinuteText), wpm > 0 {
+        // If wordsPerPage is cached and pages/minutes changed, recompute WPM
+        // directly from the current field values rather than relying on the
+        // wordsPerMinuteText @State (which may not yet reflect onChange updates).
+        let pagesChanged = s.pages != session.pages
+        let timeChanged = s.secs != session.secs
+        if let wpp = session.wordsPerPage, wpp > 0,
+           let pages = s.pages, pages > 0, mins > 0,
+           (pagesChanged || timeChanged) {
+            s.wordsPerMinute = ceil(Double(pages * wpp) / Double(mins))
+        } else if let wpm = Double(wordsPerMinuteText), wpm > 0 {
             s.wordsPerMinute = ceil(wpm)
         } else {
             s.wordsPerMinute = nil

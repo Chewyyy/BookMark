@@ -163,7 +163,7 @@ struct ReadiumReaderContainer: View {
                         }
                         .onEnded { value in
                             guard settings.swipe else { return }
-                            finishInteractiveSwipe(value, width: geo.size.width)
+                            finishInteractiveSwipe(value, size: geo.size)
                         }
                 )
             }
@@ -200,7 +200,7 @@ struct ReadiumReaderContainer: View {
             performFadePageTurn(direction: direction)
             return
         }
-        if animation == .curl || animation == .rigid || animation == .testCurl {
+        if animation == .curl || animation == .rigid || animation == .testCurl || animation == .scroll {
             guard !bridge.isAnimatingPageTurn else { return }
             if animation != .testCurl {
                 onPageTurn(direction)
@@ -297,14 +297,25 @@ struct ReadiumReaderContainer: View {
         bridge.updateInteractiveCurl(progress: progress, verticalPull: verticalPull, touchY: touchY)
     }
 
-    private func finishInteractiveSwipe(_ value: DragGesture.Value, width: CGFloat) {
+    private func finishInteractiveSwipe(_ value: DragGesture.Value, size: CGSize) {
         let dx = value.translation.width
         let dy = value.translation.height
         let predictedDx = value.predictedEndTranslation.width
-        let threshold = max(58, width * 0.18)
+        let predictedDy = value.predictedEndTranslation.height
+        let threshold = max(58, size.width * 0.18)
         let isHorizontal = abs(dx) > abs(dy) * 1.20 || abs(predictedDx) > threshold
 
         let animation = settings.pageAnim
+
+        if animation == .scroll {
+            let vThreshold = max(58, size.height * 0.15)
+            if dy < -vThreshold || predictedDy < -vThreshold {
+                turnPage(direction: 1)
+            } else if dy > vThreshold || predictedDy > vThreshold {
+                turnPage(direction: -1)
+            }
+            return
+        }
 
         if animation == .curl {
             // Resolve interactive curl session if one is open.
@@ -476,7 +487,7 @@ private struct PageTurnOverlay: View {
                 palette.backgroundColor
                     .opacity(0.88 * visual.progress)
                     .transition(.opacity)
-            case .rigid, .curl, .testCurl, .slide, .none:
+            case .rigid, .curl, .testCurl, .slide, .scroll, .none:
                 EmptyView()
             }
         }
@@ -907,6 +918,18 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
                 emitLocation(locator)
             } else {
                 publishChapterPageState(from: navigator.viewport)
+            }
+            // Near a chapter boundary the WKWebView viewport may not have fully
+            // settled within the 90ms sleep that preceded this resync, so
+            // upperBound can be just under 0.999 and chapterPageState returns
+            // currentPage = totalPages-1 ("1 page left" instead of "End of chapter").
+            // Schedule one additional viewport re-check; the dedup guard in
+            // publishChapterPageState means it only emits if the state changed.
+            // No isResyncingReaderState guard needed — this path skips emitLocation
+            // so it never reaches refreshTestCurlIfNeeded.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                guard let self else { return }
+                self.publishChapterPageState(from: self.navigator?.viewport)
             }
         }
 

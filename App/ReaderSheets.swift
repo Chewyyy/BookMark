@@ -182,7 +182,7 @@ struct ReaderSettingsSheet: View {
                 }
             }
 
-            Text("Slide uses Readium's native page advance. Fade and Rigid use BookMark's transition layer. Realistic uses UIKit's built-in page curl. Tap the selected option again for no animation.")
+            Text("Slide uses Readium's native page advance. Fade and Rigid use BookMark's transition layer. Realistic uses UIKit's built-in page curl. Scroll turns pages with an up/down swipe. Tap the selected option again for no animation.")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .padding(.top, 4)
@@ -289,7 +289,7 @@ private extension PageCountMode {
 }
 
 private extension PageAnimation {
-    static var displayCases: [PageAnimation] { [.slide, .fade, .curl, .testCurl] }
+    static var displayCases: [PageAnimation] { [.slide, .scroll, .fade, .curl, .testCurl] }
 
     var label: String {
         switch self {
@@ -298,6 +298,7 @@ private extension PageAnimation {
         case .rigid: return "Rigid"
         case .curl: return "Rigid"
         case .testCurl: return "Realistic"
+        case .scroll: return "Scroll"
         case .none: return "None"
         }
     }
@@ -309,6 +310,7 @@ private extension PageAnimation {
         case .rigid: return "rectangle.portrait.rotate"
         case .curl: return "book.pages"
         case .testCurl: return "rectangle.portrait.on.rectangle.portrait.angled"
+        case .scroll: return "arrow.up.and.down"
         case .none: return "nosign"
         }
     }

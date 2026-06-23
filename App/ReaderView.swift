@@ -256,7 +256,7 @@ struct ReaderView: View {
 
             if showGoalCelebration {
                 goalCelebrationBanner
-                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .transition(.opacity)
                     .zIndex(3)
             }
         }
@@ -393,25 +393,30 @@ struct ReaderView: View {
 
     private var goalCelebrationBanner: some View {
         VStack {
-            HStack(spacing: 12) {
-                Image(systemName: "checkmark")
-                    .font(.system(size: 15, weight: .black))
-                    .foregroundStyle(model.theme.isDark ? Color.black : Color.white)
-                    .frame(width: 28, height: 28)
-                    .background(Theme.imsg, in: Circle())
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Theme.imsg)
 
                 Text("Today’s reading goal achieved")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(model.theme.foregroundColor.opacity(0.62))
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(model.theme.foregroundColor)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.72)
+                    .minimumScaleFactor(0.8)
             }
-            .padding(.horizontal, 18)
+            .padding(.horizontal, 16)
             .padding(.vertical, 10)
-            .background(model.theme.panelMaterial, in: Capsule())
-            .overlay(Capsule().stroke(Color.gray.opacity(0.12), lineWidth: 1))
-            .shadow(color: .black.opacity(model.theme.isDark ? 0.28 : 0.12), radius: 18, x: 0, y: 8)
-            .padding(.horizontal, 24)
+            .background {
+                if #available(iOS 26.0, *) {
+                    Capsule()
+                        .glassEffect(.regular)
+                } else {
+                    Capsule()
+                        .fill(model.theme.panelMaterial)
+                        .overlay(Capsule().strokeBorder(Color.gray.opacity(0.15), lineWidth: 1))
+                }
+            }
+            .shadow(color: .black.opacity(model.theme.isDark ? 0.22 : 0.10), radius: 12, x: 0, y: 4)
             .padding(.top, 8)
 
             Spacer()
@@ -1354,7 +1359,7 @@ struct ReaderView: View {
         goalCelebrationShown = true
         goalCelebrationTask?.cancel()
 
-        withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
+        withAnimation(.easeInOut(duration: 0.4)) {
             showGoalCelebration = true
         }
 

@@ -285,7 +285,7 @@ final class PageTurnAnimator {
     func performTapTurn(direction: Int, mode: PageAnimation) async -> Bool {
         guard !isAnimating, session == nil else { return false }
         guard let hostView, let nav = navigatorController else { return false }
-        guard mode == .curl || mode == .rigid || mode == .testCurl else { return false }
+        guard mode == .curl || mode == .rigid || mode == .testCurl || mode == .scroll else { return false }
 
         if mode == .testCurl {
             return await performUIKitTestCurlTurn(direction: direction)
@@ -338,6 +338,12 @@ final class PageTurnAnimator {
         case .testCurl:
             turnState = .completingTurn
             await runSnapshotCurlAnimation(currentImage: image, destinationImage: destinationImage, direction: direction)
+        case .scroll:
+            turnState = .completingTurn
+            let slideOut: CGFloat = direction > 0 ? -hostView.bounds.height : hostView.bounds.height
+            await UIView.animateAsync(duration: 0.28, options: [.curveEaseInOut]) {
+                cover.transform = CGAffineTransform(translationX: 0, y: slideOut)
+            }
         default:
             break
         }

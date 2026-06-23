@@ -498,6 +498,7 @@ struct OnboardingView: View {
         (.none, "None", "nosign"),
         (.fade, "Fade", "circle.lefthalf.filled"),
         (.slide, "Slide", "arrow.left.and.right"),
+        (.scroll, "Scroll", "arrow.up.and.down"),
         (.curl, "Rigid", "book.pages"),
         (.testCurl, "Realistic", "rectangle.portrait.on.rectangle.portrait.angled"),
     ]
@@ -794,6 +795,8 @@ private struct AnimationPreviewCard: View {
 
     @State private var side = 0
     @State private var previewCurl: PreviewCurlState?
+    @State private var scrollOffset: CGFloat = 0
+    @State private var isScrollAnimating = false
 
     private let samples = [
         "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Proin lacinia cursus congue, ac nibh nec tortor tempor posuere.",
@@ -805,6 +808,10 @@ private struct AnimationPreviewCard: View {
             ZStack {
                 if usesDragPreview {
                     sampleSide(side, size: geo.size)
+                        .frame(width: geo.size.width, height: geo.size.height)
+                } else if animation == .scroll {
+                    sampleSide(side, size: geo.size)
+                        .offset(y: scrollOffset)
                         .frame(width: geo.size.width, height: geo.size.height)
                 } else {
                     OnboardingFlip(
@@ -838,7 +845,7 @@ private struct AnimationPreviewCard: View {
 
                 VStack {
                     Spacer()
-                    Text(usesDragPreview ? "Drag or tap to turn  \u{203A}" : "Tap to turn  \u{203A}")
+                    Text(animation == .scroll ? "Swipe up or tap to turn" : usesDragPreview ? "Drag or tap to turn  \u{203A}" : "Tap to turn  \u{203A}")
                         .font(.system(size: 11, weight: .heavy, design: .serif))
                         .foregroundStyle(palette.secondaryForeground)
                         .padding(.bottom, 8)
@@ -865,6 +872,8 @@ private struct AnimationPreviewCard: View {
         )
         .onChange(of: animation) { _, _ in
             previewCurl = nil
+            scrollOffset = 0
+            isScrollAnimating = false
         }
     }
 
@@ -877,12 +886,37 @@ private struct AnimationPreviewCard: View {
         if usesDragPreview {
             startPreviewCurl(direction: 1, size: size, progress: 0.001, verticalPull: 0, touchY: 0.5)
             resolvePreviewCurl(commit: true)
+        } else if animation == .scroll {
+            advanceScrollPage(direction: 1, size: size)
         } else {
             side = (side + 1) % samples.count
         }
     }
 
+    private func advanceScrollPage(direction: Int, size: CGSize) {
+        guard !isScrollAnimating else { return }
+        isScrollAnimating = true
+        let slideOut: CGFloat = direction > 0 ? -size.height : size.height
+        let slideIn: CGFloat = direction > 0 ? size.height : -size.height
+        Task { @MainActor in
+            withAnimation(.easeIn(duration: 0.14)) { scrollOffset = slideOut }
+            try? await Task.sleep(nanoseconds: 140_000_000)
+            side = wrappedIndex(side + direction)
+            scrollOffset = slideIn
+            withAnimation(.easeOut(duration: 0.16)) { scrollOffset = 0 }
+            try? await Task.sleep(nanoseconds: 160_000_000)
+            isScrollAnimating = false
+        }
+    }
+
     private func updatePreviewDrag(_ value: DragGesture.Value, size: CGSize) {
+        if animation == .scroll {
+            guard !isScrollAnimating else { return }
+            let dy = value.translation.height
+            guard abs(dy) > 6, abs(dy) > abs(value.translation.width) * 0.45 else { return }
+            scrollOffset = dy
+            return
+        }
         guard usesDragPreview else { return }
         let dx = value.translation.width
         let dy = value.translation.height
@@ -908,6 +942,20 @@ private struct AnimationPreviewCard: View {
     }
 
     private func finishPreviewDrag(_ value: DragGesture.Value, size: CGSize) {
+        if animation == .scroll {
+            guard !isScrollAnimating else { return }
+            let dy = value.translation.height
+            let predictedDy = value.predictedEndTranslation.height
+            let threshold = max(40, size.height * 0.25)
+            if dy < -threshold || predictedDy < -threshold {
+                advanceScrollPage(direction: 1, size: size)
+            } else if dy > threshold || predictedDy > threshold {
+                advanceScrollPage(direction: -1, size: size)
+            } else {
+                withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) { scrollOffset = 0 }
+            }
+            return
+        }
         guard usesDragPreview, let previewCurl else { return }
         let threshold = max(44, size.width * 0.24)
         let dx = value.translation.width
@@ -1016,6 +1064,8 @@ private struct OnboardingAnimationReaderDemo: View {
     @State private var page = 0
     @State private var previewCurl: PreviewCurlState?
     @State private var rigidTurn: RigidTurnState?
+    @State private var scrollOffset: CGFloat = 0
+    @State private var isScrollAnimating = false
 
     private let samples = [
         "The room was quiet except for the soft turn of a page. BookMark keeps the words centered and the controls out of the way, so the book feels like the main event.",
@@ -1039,6 +1089,8 @@ private struct OnboardingAnimationReaderDemo: View {
             .onChange(of: selectedAnimation) { _, _ in
                 previewCurl = nil
                 rigidTurn = nil
+                scrollOffset = 0
+                isScrollAnimating = false
             }
         }
     }
@@ -1069,6 +1121,20 @@ private struct OnboardingAnimationReaderDemo: View {
                 DragGesture(minimumDistance: 8, coordinateSpace: .local)
                     .onChanged { updateRigidDrag($0, size: size) }
                     .onEnded { finishRigidDrag($0, size: size) }
+            )
+        case .scroll:
+            ZStack {
+                demoPage(page, size: size)
+                    .offset(y: scrollOffset)
+            }
+            .frame(width: size.width, height: size.height)
+            .clipped()
+            .contentShape(Rectangle())
+            .onTapGesture { advanceScrollPage(direction: 1, size: size) }
+            .gesture(
+                DragGesture(minimumDistance: 8, coordinateSpace: .local)
+                    .onChanged { updateScrollDrag($0, size: size) }
+                    .onEnded { finishScrollDrag($0, size: size) }
             )
         default:
             OnboardingFlip(
@@ -1124,7 +1190,7 @@ private struct OnboardingAnimationReaderDemo: View {
 
     private var bottomChrome: some View {
         VStack(spacing: 12) {
-            Text(selectedAnimation == .testCurl ? "Drag the page edge to curl" : "Tap or swipe the page to preview")
+            Text(selectedAnimation == .testCurl ? "Drag the page edge to curl" : selectedAnimation == .scroll ? "Swipe up or down to turn" : "Tap or swipe the page to preview")
                 .font(.system(size: 12, weight: .heavy, design: .serif))
                 .foregroundStyle(palette.secondaryForeground)
             HStack(spacing: 7) {
@@ -1144,10 +1210,12 @@ private struct OnboardingAnimationReaderDemo: View {
             (.none, "None", "nosign"),
             (.fade, "Fade", "circle.lefthalf.filled"),
             (.slide, "Slide", "arrow.left.and.right"),
+            (.scroll, "Scroll", "arrow.up.and.down"),
             (.curl, "Rigid", "book.pages"),
             (.testCurl, "Realistic", "rectangle.portrait.on.rectangle.portrait.angled"),
         ]
     }
+
 
     private func animationButton(_ choice: (anim: PageAnimation, label: String, icon: String)) -> some View {
         let selected = selectedAnimation == choice.anim
@@ -1328,6 +1396,43 @@ private struct OnboardingAnimationReaderDemo: View {
             guard previewCurl?.id == state.id else { return }
             if commit { page = state.target }
             previewCurl = nil
+        }
+    }
+
+    private func advanceScrollPage(direction: Int, size: CGSize) {
+        guard !isScrollAnimating else { return }
+        isScrollAnimating = true
+        let slideOut: CGFloat = direction > 0 ? -size.height : size.height
+        let slideIn: CGFloat = direction > 0 ? size.height : -size.height
+        Task { @MainActor in
+            withAnimation(.easeIn(duration: 0.14)) { scrollOffset = slideOut }
+            try? await Task.sleep(nanoseconds: 140_000_000)
+            page = wrappedIndex(page + direction)
+            scrollOffset = slideIn
+            withAnimation(.easeOut(duration: 0.16)) { scrollOffset = 0 }
+            try? await Task.sleep(nanoseconds: 160_000_000)
+            isScrollAnimating = false
+        }
+    }
+
+    private func updateScrollDrag(_ value: DragGesture.Value, size: CGSize) {
+        guard !isScrollAnimating else { return }
+        let dy = value.translation.height
+        guard abs(dy) > 6, abs(dy) > abs(value.translation.width) * 0.45 else { return }
+        scrollOffset = dy
+    }
+
+    private func finishScrollDrag(_ value: DragGesture.Value, size: CGSize) {
+        guard !isScrollAnimating else { return }
+        let dy = value.translation.height
+        let predictedDy = value.predictedEndTranslation.height
+        let threshold = max(58, size.height * 0.15)
+        if dy < -threshold || predictedDy < -threshold {
+            advanceScrollPage(direction: 1, size: size)
+        } else if dy > threshold || predictedDy > threshold {
+            advanceScrollPage(direction: -1, size: size)
+        } else {
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) { scrollOffset = 0 }
         }
     }
 
@@ -1823,7 +1928,7 @@ private struct OnboardingFlip<Page: View>: View {
             inFlight = true
             withAnimation(.easeInOut(duration: 0.34)) { displayed = clamped }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.36) { inFlight = false }
-        case .none:
+        case .scroll, .none:
             transitionKind = .none
             var tx = Transaction(); tx.disablesAnimations = true
             withTransaction(tx) { displayed = clamped }
