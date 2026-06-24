@@ -25,6 +25,16 @@ struct Book: Identifiable, Codable, Hashable {
     /// Per-layout pagination snapshots keyed by reader settings. These let the
     /// reader show a stable whole-book "Page X of Y" immediately on reopen.
     var paginationCache: [PaginationKey: PaginatedSettings]?
+    /// Series this book belongs to (e.g. "Mistborn"), if known. Populated at
+    /// import from the EPUB's embedded metadata; may later be set by hand.
+    var seriesName: String?
+    /// Position within `seriesName` (e.g. 1.0, or 3.5 for novellas).
+    var seriesIndex: Double?
+    /// ISBN-13/10 pulled from the EPUB, used for external metadata matching.
+    var isbn: String?
+    /// Provenance of `seriesName`: "calibre", "epub3", or "manual". A "manual"
+    /// value is never overwritten by re-parsing.
+    var seriesSource: String?
 
     init(
         id: String = UUID().uuidString,
@@ -41,7 +51,11 @@ struct Book: Identifiable, Codable, Hashable {
         totalLocations: Int? = nil,
         wordCountsPerSpine: [Int]? = nil,
         totalWords: Int? = nil,
-        paginationCache: [PaginationKey: PaginatedSettings]? = nil
+        paginationCache: [PaginationKey: PaginatedSettings]? = nil,
+        seriesName: String? = nil,
+        seriesIndex: Double? = nil,
+        isbn: String? = nil,
+        seriesSource: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -58,6 +72,35 @@ struct Book: Identifiable, Codable, Hashable {
         self.wordCountsPerSpine = wordCountsPerSpine
         self.totalWords = totalWords
         self.paginationCache = paginationCache
+        self.seriesName = seriesName
+        self.seriesIndex = seriesIndex
+        self.isbn = isbn
+        self.seriesSource = seriesSource
+    }
+}
+
+extension Book {
+    /// Human-facing "Series · Book N" label, or just the series name when the
+    /// position is unknown. Nil when the book isn't part of a series.
+    var seriesDisplay: String? {
+        guard let name = seriesName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else {
+            return nil
+        }
+        guard let index = seriesIndex else { return name }
+        return "\(name) · Book \(Self.formatSeriesIndex(index))"
+    }
+
+    /// Compact badge form for covers: "#1", "#3.5". Nil without a position.
+    var seriesIndexBadge: String? {
+        guard seriesName != nil, let index = seriesIndex else { return nil }
+        return "#\(Self.formatSeriesIndex(index))"
+    }
+
+    /// Trims a trailing ".0" so 1.0 reads as "1" but 3.5 stays "3.5".
+    static func formatSeriesIndex(_ index: Double) -> String {
+        index.truncatingRemainder(dividingBy: 1) == 0
+            ? String(Int(index))
+            : String(format: "%g", index)
     }
 }
 
@@ -134,6 +177,16 @@ struct LibraryPaginationStatus: Equatable {
     var text: String {
         guard totalChapters > 0 else { return "Paginating library" }
         return "Paginating \(bookTitle) \(measuredChapters)/\(totalChapters)"
+    }
+}
+
+struct LibrarySeriesStatus: Equatable {
+    var processed: Int
+    var total: Int
+
+    var text: String {
+        guard total > 0 else { return "Finding series" }
+        return "Finding series \(processed)/\(total)"
     }
 }
 

@@ -91,7 +91,11 @@ enum BackupMigration {
                 totalLocations: dict["totalLocations"] as? Int,
                 wordCountsPerSpine: dict["wordCountsPerSpine"] as? [Int],
                 totalWords: dict["totalWords"] as? Int,
-                paginationCache: decodePaginationCache(dict["paginationCache"])
+                paginationCache: decodePaginationCache(dict["paginationCache"]),
+                seriesName: dict["seriesName"] as? String,
+                seriesIndex: (dict["seriesIndex"] as? Double) ?? (dict["seriesIndex"] as? Int).map(Double.init),
+                isbn: dict["isbn"] as? String,
+                seriesSource: dict["seriesSource"] as? String
             )
         }
     }

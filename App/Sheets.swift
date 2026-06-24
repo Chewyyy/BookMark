@@ -58,6 +58,7 @@ struct BookActionsSheet: View {
     let onContinue: () -> Void
     let onFinish: () -> Void
     let onDetails: () -> Void
+    let onEditSeries: () -> Void
     let onRemove: () -> Void
 
     var body: some View {
@@ -77,6 +78,7 @@ struct BookActionsSheet: View {
                     action: onFinish
                 )
                 ActionRow(icon: "info.circle", title: "Book Details", action: onDetails)
+                ActionRow(icon: "books.vertical", title: "Edit Series", action: onEditSeries)
                 ActionRow(icon: "trash", title: "Remove from Library", destructive: true, action: onRemove)
             }
         }
@@ -89,16 +91,45 @@ struct BookActionsSheet: View {
 // MARK: - Book Details
 
 struct BookDetailsSheet: View {
-    let book: Book
     @EnvironmentObject private var store: Store
     @Environment(\.dismiss) private var dismiss
+    @State private var currentID: String
+    @State private var editingSeries = false
+    /// Snapshot of book IDs to step through with prev/next, captured at present
+    /// time so the order matches the view it was opened from (flat library order
+    /// vs. By-Series order). Empty falls back to the live library order.
+    private let providedOrder: [String]
 
-    private var totalSecs: Int { store.sessionsForBook(book).reduce(0) { $0 + $1.secs } }
-    private var sessionCount: Int { store.sessionsForBook(book).count }
-    private var pct: Int { Int((store.progress[book.id]?.pct ?? 0) * 100) }
+    init(book: Book, orderedIDs: [String] = []) {
+        _currentID = State(initialValue: book.id)
+        providedOrder = orderedIDs
+    }
+
+    /// The book currently being shown, read live from the store so edits and
+    /// prev/next navigation both reflect here. Falls back to the first book if
+    /// the current one was removed mid-session.
+    private var liveBook: Book {
+        store.books.first { $0.id == currentID } ?? store.sortedBooks().first ?? Book(title: "", author: "")
+    }
+
+    /// Order used for prev/next stepping — the snapshot from the presenting view
+    /// when available, otherwise the live library order.
+    private var orderIDs: [String] {
+        providedOrder.isEmpty ? store.sortedBooks().map(\.id) : providedOrder
+    }
+    private var currentIndex: Int? { orderIDs.firstIndex(of: currentID) }
+    private var canGoPrev: Bool { (currentIndex ?? 0) > 0 }
+    private var canGoNext: Bool {
+        guard let i = currentIndex else { return false }
+        return i < orderIDs.count - 1
+    }
+
+    private var totalSecs: Int { store.sessionsForBook(liveBook).reduce(0) { $0 + $1.secs } }
+    private var sessionCount: Int { store.sessionsForBook(liveBook).count }
+    private var pct: Int { Int((store.progress[liveBook.id]?.pct ?? 0) * 100) }
 
     private var lengthValue: String? {
-        guard let total = book.totalWords, total > 0 else { return nil }
+        guard let total = liveBook.totalWords, total > 0 else { return nil }
         let pages = EPUBWordCounter.standardizedPages(
             forWords: total,
             wordsPerPage: store.resolvedWordsPerPageForCurrentDevice()
@@ -110,6 +141,7 @@ struct BookDetailsSheet: View {
     /// Position derived from saved progress percentage × totalWords, since
     /// the reader isn't open here.
     private var timeRemainingValue: String? {
+        let book = liveBook
         guard let totalWords = book.totalWords, totalWords > 0 else { return nil }
         let pct = store.progress[book.id]?.pct ?? 0
         let currentOffset = Int(Double(totalWords) * max(0, min(1, pct)))
@@ -125,45 +157,271 @@ struct BookDetailsSheet: View {
     }
 
     var body: some View {
+        let book = liveBook
+        return ScrollView {
+            VStack(spacing: 0) {
+                Grabber()
+                coverHeader(book)
+                    .padding(.bottom, 16)
+
+                ActionGroup {
+                    EditableDetailRow(
+                        label: "Series",
+                        value: book.seriesDisplay ?? "Tap to add",
+                        isPlaceholder: book.seriesDisplay == nil
+                    ) { editingSeries = true }
+                    if let lengthValue {
+                        DetailRow(label: "Length", value: lengthValue)
+                    }
+                    if !book.finished, let timeRemainingValue {
+                        DetailRow(label: "Time remaining", value: timeRemainingValue)
+                    }
+                    DetailRow(label: "Progress", value: "\(pct)%")
+                    DetailRow(label: "Time read", value: Fmt.duration(totalSecs))
+                    DetailRow(label: "Sessions", value: "\(sessionCount)")
+                    DetailRow(label: "Added", value: Fmt.longDate(book.added))
+                    if book.finished, let f = book.finishedAt {
+                        DetailRow(label: "Finished", value: Fmt.dateAndTime(f))
+                    }
+                }
+                .padding(.bottom, 12)
+
+                ActionGroup {
+                    Button { dismiss() } label: {
+                        Text("Done")
+                            .font(.system(size: 15, weight: .bold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .foregroundStyle(Theme.text)
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 24)
+        }
+        .background(Theme.background)
+        .sheet(isPresented: $editingSeries) {
+            EditSeriesSheet(book: book)
+                .presentationDetents([.medium])
+                .glassSheetPresentation()
+        }
+    }
+
+    /// Cover front-and-center, flanked by prev/next steppers, title + author
+    /// underneath. The cover is the focal point; the chevrons let you sweep the
+    /// whole library to fix metadata without leaving the sheet.
+    private func coverHeader(_ book: Book) -> some View {
+        HStack(spacing: 12) {
+            navButton(systemImage: "chevron.left", enabled: canGoPrev) { step(-1) }
+                .accessibilityLabel("Previous book")
+
+            VStack(spacing: 10) {
+                BookCover(book: book)
+                    .aspectRatio(2.0 / 3.0, contentMode: .fit)
+                    .frame(height: 188)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .shadow(color: .black.opacity(0.22), radius: 14, y: 6)
+
+                VStack(spacing: 4) {
+                    Text(book.title)
+                        .font(.system(size: 16, weight: .heavy))
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                    Text(book.author)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.subtle)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(1)
+                }
+            }
+            .frame(maxWidth: .infinity)
+
+            navButton(systemImage: "chevron.right", enabled: canGoNext) { step(1) }
+                .accessibilityLabel("Next book")
+        }
+    }
+
+    private func navButton(systemImage: String, enabled: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 16, weight: .heavy))
+                .foregroundStyle(enabled ? Theme.accent : Theme.subtle.opacity(0.35))
+                .frame(width: 38, height: 38)
+                .background((enabled ? Theme.accent : Theme.subtle).opacity(enabled ? 0.1 : 0.06))
+                .clipShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+    }
+
+    private func step(_ delta: Int) {
+        guard let i = currentIndex else { return }
+        let next = i + delta
+        guard orderIDs.indices.contains(next) else { return }
+        withAnimation(.easeOut(duration: 0.15)) {
+            currentID = orderIDs[next]
+        }
+    }
+}
+
+// MARK: - Edit Series
+
+struct EditSeriesSheet: View {
+    let book: Book
+    @EnvironmentObject private var store: Store
+    @Environment(\.dismiss) private var dismiss
+    @State private var name: String = ""
+    @State private var numberText: String = ""
+
+    private var isDetected: Bool {
+        guard let source = book.seriesSource else { return false }
+        return source != "manual" && book.seriesName != nil
+    }
+
+    /// Existing series names to offer in the picker, minus whatever is already
+    /// typed in the field (so it isn't redundant).
+    private var existingSeries: [String] {
+        let current = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return store.allSeriesNames.filter { $0.lowercased() != current }
+    }
+
+    var body: some View {
         VStack(spacing: 0) {
             Grabber()
             VStack(spacing: 4) {
-                Text(book.title).font(.system(size: 16, weight: .heavy)).multilineTextAlignment(.center)
-                Text(book.author).font(.system(size: 12)).foregroundStyle(Theme.subtle)
+                Text("Edit Series").font(.system(size: 16, weight: .heavy))
+                Text(book.title)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.subtle)
+                    .multilineTextAlignment(.center)
             }
             .padding(.bottom, 14)
 
-            ActionGroup {
-                if let lengthValue {
-                    DetailRow(label: "Length", value: lengthValue)
-                }
-                if !book.finished, let timeRemainingValue {
-                    DetailRow(label: "Time remaining", value: timeRemainingValue)
-                }
-                DetailRow(label: "Progress", value: "\(pct)%")
-                DetailRow(label: "Time read", value: Fmt.duration(totalSecs))
-                DetailRow(label: "Sessions", value: "\(sessionCount)")
-                DetailRow(label: "Added", value: Fmt.longDate(book.added))
-                if book.finished, let f = book.finishedAt {
-                    DetailRow(label: "Finished", value: Fmt.dateAndTime(f))
+            VStack(alignment: .leading, spacing: 6) {
+                Text("SERIES NAME")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Theme.subtle)
+                    .tracking(0.5)
+                TextField("e.g. Mistborn", text: $name)
+                    .autocorrectionDisabled()
+                    .padding(.horizontal, 14).padding(.vertical, 13)
+                    .background(Theme.card)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Theme.cornerSmall)
+                            .stroke(Theme.border, lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.cornerSmall))
+
+                if !existingSeries.isEmpty {
+                    Menu {
+                        ForEach(existingSeries, id: \.self) { series in
+                            Button(series) { name = series }
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "books.vertical")
+                                .font(.system(size: 12, weight: .semibold))
+                            Text("Add to existing series")
+                                .font(.system(size: 13, weight: .semibold))
+                            Spacer()
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                        .foregroundStyle(Theme.accent)
+                        .padding(.horizontal, 14).padding(.vertical, 11)
+                        .background(Theme.accent.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: Theme.cornerSmall))
+                    }
                 }
             }
             .padding(.bottom, 12)
 
-            ActionGroup {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("BOOK NUMBER")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Theme.subtle)
+                    .tracking(0.5)
+                TextField("e.g. 1 or 3.5", text: $numberText)
+                    .keyboardType(.decimalPad)
+                    .padding(.horizontal, 14).padding(.vertical, 13)
+                    .background(Theme.card)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Theme.cornerSmall)
+                            .stroke(Theme.border, lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.cornerSmall))
+            }
+            .padding(.bottom, 12)
+
+            if isDetected {
+                Text("Detected from the EPUB file. Saving keeps your version even if the file is re-imported.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.subtle)
+                    .multilineTextAlignment(.center)
+                    .padding(.bottom, 14)
+            }
+
+            HStack(spacing: 10) {
+                if book.seriesName != nil {
+                    Button {
+                        store.setManualSeries(bookId: book.id, name: nil, index: nil)
+                        dismiss()
+                    } label: {
+                        Text("Clear")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(Theme.danger)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .background(Theme.card)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: Theme.cornerSmall)
+                                    .stroke(Theme.border, lineWidth: 1)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: Theme.cornerSmall))
+                    }
+                    .buttonStyle(.plain)
+                }
                 Button { dismiss() } label: {
-                    Text("Done")
-                        .font(.system(size: 15, weight: .bold))
+                    Text("Cancel")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(Theme.text)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 14)
-                        .foregroundStyle(Theme.text)
+                        .background(Theme.card)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: Theme.cornerSmall)
+                                .stroke(Theme.border, lineWidth: 1)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: Theme.cornerSmall))
                 }
+                .buttonStyle(.plain)
+                Button { save() } label: {
+                    Text("Save")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(Theme.accent)
+                        .clipShape(RoundedRectangle(cornerRadius: Theme.cornerSmall))
+                }
+                .buttonStyle(.plain)
             }
         }
         .padding(.horizontal, 16)
         .padding(.top, 12)
         .padding(.bottom, 24)
         .background(Theme.background)
+        .onAppear {
+            name = book.seriesName ?? ""
+            numberText = book.seriesIndex.map { Book.formatSeriesIndex($0) } ?? ""
+        }
+    }
+
+    private func save() {
+        let index = Double(numberText.replacingOccurrences(of: ",", with: "."))
+        store.setManualSeries(bookId: book.id, name: name, index: index)
+        dismiss()
     }
 }
 
@@ -1236,6 +1494,39 @@ struct DetailRow: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
+        .overlay(Divider().padding(.leading, 16), alignment: .bottom)
+    }
+}
+
+/// A `DetailRow` that acts as a button — trailing chevron signals it opens an
+/// editor. `isPlaceholder` greys the value for an empty/"tap to add" state.
+struct EditableDetailRow: View {
+    let label: String
+    let value: String
+    var isPlaceholder: Bool = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Text(label)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Theme.subtle)
+                Spacer()
+                Text(value)
+                    .font(.system(size: 14, weight: .heavy))
+                    .foregroundStyle(isPlaceholder ? Theme.subtle : Theme.text)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .heavy))
+                    .foregroundStyle(Theme.subtle.opacity(0.7))
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
         .overlay(Divider().padding(.leading, 16), alignment: .bottom)
     }
 }

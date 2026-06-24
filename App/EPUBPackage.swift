@@ -13,6 +13,18 @@ struct EPUBPackage {
     var spine: [SpineEntry]
     var toc: [TOCEntry]
     var coverHref: String?
+    /// Series name embedded in the OPF, if any (e.g. "Mistborn"). Populated by
+    /// `parseSeries` from Calibre or EPUB 3 collection metadata.
+    var seriesName: String?
+    /// Position within the series (e.g. 1.0, or 3.5 for novellas). May be nil
+    /// even when `seriesName` is present.
+    var seriesIndex: Double?
+    /// Where `seriesName` came from: "calibre" or "epub3". Lets later layers
+    /// reason about trust and lets a manual edit take precedence.
+    var seriesSource: String?
+    /// Best-effort ISBN-13/10 pulled from `dc:identifier`. Used to enable
+    /// reliable external metadata matching (Tier 2).
+    var isbn: String?
 
     struct ManifestItem {
         var id: String
@@ -44,6 +56,9 @@ struct EPUBPackage {
 
         let title = innerText(opfStr, tag: "dc:title") ?? innerText(opfStr, tag: "title") ?? "Untitled"
         let author = innerText(opfStr, tag: "dc:creator") ?? innerText(opfStr, tag: "creator") ?? "Unknown Author"
+
+        let series = parseSeries(opfStr)
+        let isbn = parseISBN(opfStr)
 
         let manifest = parseManifest(opfStr, opfDir: opfDir)
         let coverId = findCoverId(opfStr)
@@ -84,7 +99,11 @@ struct EPUBPackage {
             manifest: manifest,
             spine: labeledSpine,
             toc: toc,
-            coverHref: coverHref
+            coverHref: coverHref,
+            seriesName: series.name,
+            seriesIndex: series.index,
+            seriesSource: series.source,
+            isbn: isbn
         )
     }
 
@@ -190,6 +209,138 @@ struct EPUBPackage {
             }
         }
         return coverId
+    }
+
+    // MARK: - Series & identifier metadata
+
+    /// Extract a series name + position from the OPF. Prefers Calibre's
+    /// `calibre:series` / `calibre:series_index` meta tags (ubiquitous in
+    /// sideloaded EPUBs), falling back to the EPUB 3 `belongs-to-collection`
+    /// vocabulary. Returns a nil name when neither is present.
+    private static func parseSeries(_ opf: String) -> (name: String?, index: Double?, source: String?) {
+        // Calibre legacy <meta name="calibre:series" content="..."/> pair.
+        var calibreName: String?
+        var calibreIndexRaw: String?
+        forEachTag(in: opf, named: "meta") { attrs in
+            switch attrs["name"] {
+            case "calibre:series": calibreName = attrs["content"]
+            case "calibre:series_index": calibreIndexRaw = attrs["content"]
+            default: break
+            }
+        }
+        if let raw = calibreName {
+            let name = cleanText(raw)
+            if !name.isEmpty {
+                return (name, calibreIndexRaw.flatMap { Double($0) }, "calibre")
+            }
+        }
+
+        // EPUB 3 collection refinement.
+        if let epub3 = parseEPUB3Collection(opf) {
+            return (epub3.name, epub3.index, "epub3")
+        }
+        return (nil, nil, nil)
+    }
+
+    /// Parse `<meta property="belongs-to-collection">Name</meta>` plus its
+    /// `collection-type` / `group-position` refinements. Prefers a collection
+    /// explicitly typed as a series; ignores ones typed as a "set" (box set).
+    private static func parseEPUB3Collection(_ opf: String) -> (name: String, index: Double?)? {
+        let pattern = #"<meta\b([^>]*\bproperty\s*=\s*["']belongs-to-collection["'][^>]*)>([\s\S]*?)</meta>"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { return nil }
+        let range = NSRange(opf.startIndex..., in: opf)
+
+        struct Candidate { var name: String; var typedSeries: Bool; var isSeries: Bool; var index: Double? }
+        var candidates: [Candidate] = []
+
+        regex.enumerateMatches(in: opf, range: range) { m, _, _ in
+            guard let m,
+                  let attrR = Range(m.range(at: 1), in: opf),
+                  let innerR = Range(m.range(at: 2), in: opf) else { return }
+            let attrs = parseAttributes("<meta \(String(opf[attrR]))>")
+            let name = cleanText(String(opf[innerR]))
+            guard !name.isEmpty else { return }
+
+            var isSeries = true     // untyped collections are treated as series
+            var typedSeries = false
+            var index: Double?
+            if let id = attrs["id"] {
+                if let type = refinesValue(opf, refines: id, property: "collection-type") {
+                    isSeries = type.lowercased() == "series"
+                    typedSeries = isSeries
+                }
+                if let position = refinesValue(opf, refines: id, property: "group-position") {
+                    index = Double(position)
+                }
+            }
+            candidates.append(Candidate(name: name, typedSeries: typedSeries, isSeries: isSeries, index: index))
+        }
+
+        if let best = candidates.first(where: { $0.typedSeries }) ?? candidates.first(where: { $0.isSeries }) {
+            return (best.name, best.index)
+        }
+        return nil
+    }
+
+    /// Inner text of the first `<meta refines="#id" property="...">` element
+    /// (attribute order varies, so both orderings are tried).
+    private static func refinesValue(_ opf: String, refines id: String, property: String) -> String? {
+        let escId = NSRegularExpression.escapedPattern(for: id)
+        let escProp = NSRegularExpression.escapedPattern(for: property)
+        let patterns = [
+            "<meta\\b[^>]*\\brefines\\s*=\\s*[\"']#\(escId)[\"'][^>]*\\bproperty\\s*=\\s*[\"']\(escProp)[\"'][^>]*>([\\s\\S]*?)</meta>",
+            "<meta\\b[^>]*\\bproperty\\s*=\\s*[\"']\(escProp)[\"'][^>]*\\brefines\\s*=\\s*[\"']#\(escId)[\"'][^>]*>([\\s\\S]*?)</meta>"
+        ]
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { continue }
+            let range = NSRange(opf.startIndex..., in: opf)
+            if let m = regex.firstMatch(in: opf, range: range), m.numberOfRanges == 2,
+               let r = Range(m.range(at: 1), in: opf) {
+                return cleanText(String(opf[r]))
+            }
+        }
+        return nil
+    }
+
+    /// Best-effort ISBN-13/10 from the OPF's `dc:identifier` records. Trusts a
+    /// value when its scheme says ISBN or it carries an isbn URN; otherwise only
+    /// accepts a bare 13-digit string (to avoid mistaking a UUID/UUID-like id).
+    private static func parseISBN(_ opf: String) -> String? {
+        var tagged: [String] = []
+        var untagged: [String] = []
+        for tag in ["dc:identifier", "identifier"] {
+            let pattern = "<\(tag)\\b([^>]*)>([\\s\\S]*?)</\(tag)>"
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { continue }
+            let range = NSRange(opf.startIndex..., in: opf)
+            regex.enumerateMatches(in: opf, range: range) { m, _, _ in
+                guard let m,
+                      let attrR = Range(m.range(at: 1), in: opf),
+                      let valR = Range(m.range(at: 2), in: opf) else { return }
+                let attrs = parseAttributes("<x \(String(opf[attrR]))>")
+                let scheme = (attrs["opf:scheme"] ?? attrs["scheme"] ?? "").lowercased()
+                let raw = cleanText(String(opf[valR]))
+                guard let normalized = normalizedISBN(raw) else { return }
+                if scheme == "isbn" || raw.lowercased().contains("isbn") {
+                    tagged.append(normalized)
+                } else if normalized.count == 13 {
+                    untagged.append(normalized)
+                }
+            }
+        }
+        // Prefer an explicitly ISBN-tagged value; fall back to a bare ISBN-13.
+        return tagged.first ?? untagged.first
+    }
+
+    /// Strip URN/`ISBN:` prefixes and separators; return a clean 13- or 10-char
+    /// ISBN (10 may end in "X"), or nil if it doesn't look like one.
+    private static func normalizedISBN(_ s: String) -> String? {
+        let stripped = s.lowercased()
+            .replacingOccurrences(of: "urn:isbn:", with: "")
+            .replacingOccurrences(of: "isbn:", with: "")
+        let chars = stripped.uppercased().filter { $0.isNumber || $0 == "X" }
+        if chars.count == 13, chars.allSatisfy({ $0.isNumber }) { return chars }
+        if chars.count == 10 { return chars }
+        return nil
     }
 
     private static func parseNavToc(_ html: String, baseDir: String) -> [TOCEntry] {

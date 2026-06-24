@@ -18,6 +18,9 @@ struct BookMarkApp: App {
                     // anything missing — each parse runs on a utility-priority
                     // background task so launch isn't blocked.
                     EPUBImporter.backfillWordCounts(into: store)
+                    // Same idea for series name/number + ISBN: parse it out of
+                    // each legacy EPUB's embedded metadata, once.
+                    EPUBImporter.backfillSeriesMetadata(into: store)
                     // Defer the notification permission prompt until onboarding
                     // has run — the reminder step asks for it in context instead.
                     await ReadingReminderScheduler.reschedule(for: store, requestAuthorizationIfNeeded: store.hasCompletedOnboarding)

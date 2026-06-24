@@ -20,6 +20,9 @@ final class Store: ObservableObject {
     @Published var backupFolderName: String?
     @Published var didHydrate = false
     @Published var libraryPaginationStatus: LibraryPaginationStatus?
+    /// Set while the one-time series/ISBN backfill walks the library, so the
+    /// library can show a "Finding series 12/40" line. Nil when idle.
+    @Published var librarySeriesStatus: LibrarySeriesStatus?
     /// Drives the first-launch onboarding cover. Stored in `UserDefaults` (a UI
     /// gate, not user content) so it survives independently of the JSON store and
     /// never round-trips through the debounced snapshot machinery.
@@ -709,6 +712,126 @@ final class Store: ObservableObject {
         books[i].wordCountsPerSpine = perSpine
         books[i].totalWords = total
         scheduleSave()
+    }
+
+    /// Persist series metadata + ISBN parsed from a book's EPUB. Never clobbers
+    /// a series the user set by hand (`seriesSource == "manual"`), but always
+    /// backfills a missing ISBN. Mirrors `updateWordCounts`' fire-after-parse
+    /// pattern so import and backfill share one path.
+    func updateSeriesMetadata(bookId: String, name: String?, index: Double?, isbn: String?, source: String?) {
+        guard let i = books.firstIndex(where: { $0.id == bookId }) else { return }
+        var changed = false
+
+        if books[i].isbn == nil, let isbn, !isbn.isEmpty {
+            books[i].isbn = isbn
+            changed = true
+        }
+
+        if books[i].seriesSource != "manual" {
+            let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let trimmed, !trimmed.isEmpty {
+                if books[i].seriesName != trimmed || books[i].seriesIndex != index || books[i].seriesSource != source {
+                    books[i].seriesName = trimmed
+                    books[i].seriesIndex = index
+                    books[i].seriesSource = source
+                    changed = true
+                }
+            } else if books[i].seriesName == nil, books[i].seriesSource == nil {
+                // We parsed the file and it carries no series. Stamp a sentinel so
+                // the backfill marks this book "checked" and won't re-scan it every
+                // launch. A manual edit or relink can still populate it later.
+                books[i].seriesSource = "none"
+                changed = true
+            }
+        }
+
+        if changed { scheduleSave() }
+    }
+
+    /// User-entered series metadata. Stamps the source as "manual" so the
+    /// re-parse paths (`updateSeriesMetadata`) never overwrite it. An empty name
+    /// clears the series entirely (and resets the source so a future relink may
+    /// repopulate it from the file).
+    func setManualSeries(bookId: String, name: String?, index: Double?) {
+        guard let i = books.firstIndex(where: { $0.id == bookId }) else { return }
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let trimmed, !trimmed.isEmpty {
+            books[i].seriesName = trimmed
+            books[i].seriesIndex = index
+            books[i].seriesSource = "manual"
+        } else {
+            books[i].seriesName = nil
+            books[i].seriesIndex = nil
+            books[i].seriesSource = nil
+        }
+        scheduleSave()
+    }
+
+    struct SeriesGroup: Identifiable, Hashable {
+        var id: String      // normalized key for stable identity
+        var name: String    // display name, as first seen
+        var books: [Book]
+    }
+
+    /// Groups the library by series for the "By Series" view. Series are sorted
+    /// alphabetically; books within a series by position (nil positions last),
+    /// then title. Books with no series come back separately in library order.
+    func seriesGroups() -> (series: [SeriesGroup], standalone: [Book]) {
+        var grouped: [String: SeriesGroup] = [:]
+        var order: [String] = []
+        var standalone: [Book] = []
+
+        for book in sortedBooks() {
+            guard let raw = book.seriesName?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+                standalone.append(book)
+                continue
+            }
+            let key = normalize(raw)
+            if grouped[key] == nil {
+                grouped[key] = SeriesGroup(id: key, name: raw, books: [])
+                order.append(key)
+            }
+            grouped[key]?.books.append(book)
+        }
+
+        let series = order.compactMap { grouped[$0] }
+            .map { group -> SeriesGroup in
+                var g = group
+                g.books.sort { lhs, rhs in
+                    switch (lhs.seriesIndex, rhs.seriesIndex) {
+                    case let (l?, r?): return l != r ? l < r : lhs.title < rhs.title
+                    case (nil, _?): return false
+                    case (_?, nil): return true
+                    default: return lhs.title < rhs.title
+                    }
+                }
+                return g
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+
+        return (series, standalone)
+    }
+
+    /// True when at least one book carries a series — used to decide whether the
+    /// library's view-mode toggle is worth showing.
+    var hasAnySeries: Bool {
+        books.contains { ($0.seriesName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false) }
+    }
+
+    /// Distinct series names already in the library, case-insensitively
+    /// de-duplicated and alphabetized. Powers the "add to existing series"
+    /// picker in the series editor.
+    var allSeriesNames: [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for book in books {
+            guard let name = book.seriesName?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !name.isEmpty else { continue }
+            if seen.insert(name.lowercased()).inserted {
+                result.append(name)
+            }
+        }
+        return result.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
     func updatePaginationCache(bookId: String, key: PaginationKey, settings: PaginatedSettings) {

@@ -145,6 +145,17 @@ enum EPUBImporter {
                 author: pkg?.author,
                 coverData: pkg?.coverData()
             )
+            // The relinked file may carry different (or newly present) series
+            // metadata; refresh it the same way import does.
+            if let pkg {
+                store.updateSeriesMetadata(
+                    bookId: id,
+                    name: pkg.seriesName,
+                    index: pkg.seriesIndex,
+                    isbn: pkg.isbn,
+                    source: pkg.seriesSource
+                )
+            }
             // Relinked EPUB has different content; re-count words so stats stay
             // accurate. Existing sessions stay attached to the same book id.
             if let pkg, !pkg.spine.isEmpty {
@@ -186,6 +197,18 @@ enum EPUBImporter {
         )
         let addResult = store.addOrAttachBook(book)
         let outcome: ImportOutcome = addResult.added ? .added : .relinked
+
+        // Series name / number and ISBN come straight out of the OPF we just
+        // parsed — set them now (covers both the new-book and attach paths).
+        if let pkg {
+            store.updateSeriesMetadata(
+                bookId: addResult.bookId,
+                name: pkg.seriesName,
+                index: pkg.seriesIndex,
+                isbn: pkg.isbn,
+                source: pkg.seriesSource
+            )
+        }
 
         // Word count parsing can take several hundred ms on textbooks, so we
         // hand the package off to a detached task and update the book once the
@@ -231,6 +254,53 @@ enum EPUBImporter {
                   !pkg.spine.isEmpty
             else { continue }
             countWordsInBackground(bookId: book.id, package: pkg, into: store)
+        }
+    }
+
+    /// Backfill of series metadata + ISBN for books that haven't been scanned
+    /// yet. Self-limiting rather than flag-gated: a book is "checked" once its
+    /// `seriesSource` is non-nil (a real source, or the "none" sentinel), so a
+    /// finished library yields no candidates and this no-ops. New imports
+    /// populate inline; this catches anything that predates the feature or was
+    /// skipped as a duplicate at import. Each EPUB is reopened on a background
+    /// task so launch isn't blocked.
+    @MainActor
+    static func backfillSeriesMetadata(into store: Store) {
+        let candidates = store.books.filter { $0.seriesSource == nil }
+        guard !candidates.isEmpty else { return }
+
+        let work = candidates.map { ($0.id, $0.fileName) }
+        let total = work.count
+        store.librarySeriesStatus = LibrarySeriesStatus(processed: 0, total: total)
+
+        Task.detached(priority: .utility) {
+            var processed = 0
+            for (bookId, fileName) in work {
+                if let fileName {
+                    let url = await Store.epubsDirectory().appendingPathComponent(fileName)
+                    if FileManager.default.fileExists(atPath: url.path),
+                       let data = try? Data(contentsOf: url),
+                       let pkg = EPUBPackage.open(data: data) {
+                        await MainActor.run {
+                            store.updateSeriesMetadata(
+                                bookId: bookId,
+                                name: pkg.seriesName,
+                                index: pkg.seriesIndex,
+                                isbn: pkg.isbn,
+                                source: pkg.seriesSource
+                            )
+                        }
+                    }
+                }
+                processed += 1
+                let snapshot = processed
+                await MainActor.run {
+                    store.librarySeriesStatus = LibrarySeriesStatus(processed: snapshot, total: total)
+                }
+            }
+            await MainActor.run {
+                store.librarySeriesStatus = nil
+            }
         }
     }
 }

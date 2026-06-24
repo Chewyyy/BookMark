@@ -9,6 +9,8 @@ struct LibraryView: View {
     @State private var bookActionTarget: Book?
     @State private var detailTarget: Book?
     @State private var finishTarget: Book?
+    @State private var editSeriesTarget: Book?
+    @State private var seriesMode = false
     @State private var activeDropBookID: String?
     @State private var draggingBookIDs: [String] = []
     @State private var toastMessage: String?
@@ -47,7 +49,11 @@ struct LibraryView: View {
                         sectionHeader
                             .padding(.horizontal, 16)
                             .padding(.bottom, 12)
-                        grid
+                        if seriesMode {
+                            seriesGroupedContent
+                        } else {
+                            grid
+                        }
                     }
                 }
                 .readableContentWidth(hSizeClass == .regular ? 1000 : .infinity)
@@ -61,14 +67,20 @@ struct LibraryView: View {
                 onContinue: { onOpenBook(book.id); bookActionTarget = nil },
                 onFinish: { finishTarget = book; bookActionTarget = nil },
                 onDetails: { detailTarget = book; bookActionTarget = nil },
+                onEditSeries: { editSeriesTarget = book; bookActionTarget = nil },
                 onRemove: { store.removeBook(id: book.id); bookActionTarget = nil; toast("Book removed") }
             )
-            .presentationDetents([.height(350)])
+            .presentationDetents([.height(410)])
             .glassSheetPresentation()
         }
         .sheet(item: $detailTarget) { book in
-            BookDetailsSheet(book: book)
+            BookDetailsSheet(book: book, orderedIDs: currentOrderIDs)
+                .presentationDetents([.medium, .large])
+        }
+        .sheet(item: $editSeriesTarget) { book in
+            EditSeriesSheet(book: book)
                 .presentationDetents([.medium])
+                .glassSheetPresentation()
         }
         .sheet(item: $finishTarget) { book in
             FinishDateSheet(book: book) {
@@ -151,18 +163,15 @@ struct LibraryView: View {
                     .tracking(0.9)
                     .foregroundStyle(Theme.subtle)
                 Spacer()
+                if store.hasAnySeries {
+                    viewModeToggle
+                }
             }
             if let status = store.libraryPaginationStatus {
-                HStack(spacing: 6) {
-                    ProgressView()
-                        .controlSize(.mini)
-                    Text(status.text)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Theme.subtle)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                .accessibilityLabel(status.text)
+                progressLine(status.text)
+            }
+            if let series = store.librarySeriesStatus {
+                progressLine(series.text)
             }
         }
     }
@@ -239,6 +248,126 @@ struct LibraryView: View {
         }
         .padding(.horizontal, 16)
     }
+    /// Book IDs in the order currently shown on screen, so Book Details' prev/
+    /// next steps through the same sequence the user is looking at — flat library
+    /// order in All Books, grouped order (series then standalone) in By Series.
+    private var currentOrderIDs: [String] {
+        if seriesMode {
+            let groups = store.seriesGroups()
+            return groups.series.flatMap { $0.books.map(\.id) } + groups.standalone.map(\.id)
+        }
+        return store.sortedBooks().map(\.id)
+    }
+
+    private func progressLine(_ text: String) -> some View {
+        HStack(spacing: 6) {
+            ProgressView()
+                .controlSize(.mini)
+            Text(text)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Theme.subtle)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .accessibilityLabel(text)
+    }
+
+    private var viewModeToggle: some View {
+        HStack(spacing: 2) {
+            modePill(title: "All", active: !seriesMode) { seriesMode = false }
+            modePill(title: "Series", active: seriesMode) { seriesMode = true }
+        }
+        .padding(2)
+        .background(Theme.card)
+        .clipShape(Capsule())
+        .overlay(Capsule().stroke(Theme.border, lineWidth: 1))
+    }
+
+    private func modePill(title: String, active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(active ? .white : Theme.subtle)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 5)
+                .background(active ? Theme.accent : Color.clear)
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Books grouped under series headers, with standalones gathered at the
+    /// bottom. Reordering isn't offered here — order follows series position.
+    private var seriesGroupedContent: some View {
+        let groups = store.seriesGroups()
+        return VStack(alignment: .leading, spacing: 22) {
+            ForEach(groups.series) { group in
+                VStack(alignment: .leading, spacing: 10) {
+                    seriesGroupHeader(title: group.name, count: group.books.count)
+                    LazyVGrid(columns: columns, spacing: 14) {
+                        ForEach(group.books) { book in
+                            seriesTile(book, showBadge: true)
+                        }
+                    }
+                }
+            }
+            if !groups.standalone.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    seriesGroupHeader(title: "Standalone", count: groups.standalone.count)
+                    LazyVGrid(columns: columns, spacing: 14) {
+                        ForEach(groups.standalone) { book in
+                            seriesTile(book, showBadge: false)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private func seriesGroupHeader(title: String, count: Int) -> some View {
+        HStack(spacing: 6) {
+            Text(title)
+                .font(.system(size: 14, weight: .heavy))
+                .foregroundStyle(Theme.text)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Text("\(count)")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(Theme.subtle)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 2)
+                .background(Theme.card)
+                .clipShape(Capsule())
+            Spacer()
+        }
+    }
+
+    private func seriesTile(_ book: Book, showBadge: Bool) -> some View {
+        BookCard(
+            book: book,
+            progress: store.progress[book.id],
+            seriesBadge: showBadge ? book.seriesIndexBadge : nil
+        )
+        .contentShape(RoundedRectangle(cornerRadius: Theme.cornerLarge))
+        .onTapGesture { onOpenBook(book.id) }
+        .overlay(alignment: .topTrailing) { moreButton(book) }
+    }
+
+    private func moreButton(_ book: Book) -> some View {
+        Button {
+            bookActionTarget = book
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 13, weight: .heavy))
+                .foregroundStyle(.white)
+                .frame(width: 28, height: 28)
+                .background(Color.black.opacity(0.5))
+                .clipShape(Circle())
+        }
+        .padding(7)
+    }
+
     private var emptyState: some View {
         VStack(spacing: 10) {
             Image(systemName: "books.vertical")
@@ -478,6 +607,7 @@ struct BookCover: View {
 struct BookCard: View {
     let book: Book
     let progress: ReadingProgress?
+    var seriesBadge: String? = nil
     @EnvironmentObject private var store: Store
 
     var body: some View {
@@ -499,6 +629,18 @@ struct BookCard: View {
                     .background(Theme.gold)
                     .clipShape(Capsule())
                     .padding(7)
+                }
+            }
+            .overlay(alignment: .bottomLeading) {
+                if let seriesBadge {
+                    Text(seriesBadge)
+                        .font(.system(size: 9, weight: .heavy))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Theme.accent)
+                        .clipShape(Capsule())
+                        .padding(7)
                 }
             }
             VStack(alignment: .leading, spacing: 6) {
