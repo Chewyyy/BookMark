@@ -37,6 +37,7 @@
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "2079609D2FE7172800EFF622"
                BuildableName = "BookMarkTests.xctest"
+               BlueprintName = "BookMarkTests"
                ReferencedContainer = "container:BookMark.xcodeproj">
             </BuildableReference>
          </TestableReference>

@@ -21,6 +21,7 @@ struct ReaderView: View {
     @State private var showReaderMenu = false
     @State private var pendingLocatorJSON: String?
     @State private var pendingChapterJump: ReadiumChapterJump?
+    @State private var pendingTOCLinkJump: ReadiumTOCLinkJump?
     @State private var diagnosticPageTurnRequest: ReadiumDiagnosticPageTurnRequest?
     @State private var returnLocatorJSON: String?
     @State private var readiumPublication: Publication?
@@ -39,6 +40,7 @@ struct ReaderView: View {
     @State private var hiddenPaginationMeasuredThisRun = 0
     @State private var hiddenPaginationLines: [String] = []
     @State private var automaticHiddenPaginationAttemptedKeys: Set<PaginationKey> = []
+    @State private var automaticHiddenPaginationResumeTask: Task<Void, Never>?
     @State private var sessionStartedAt = Date()
     @State private var sessionStartProgress: Double?
     @State private var sessionStartPage: Int?
@@ -158,6 +160,7 @@ struct ReaderView: View {
                     initialProgress: store.progress[bookId]?.pct ?? 0,
                     pendingLocatorJSON: pendingLocatorJSON,
                     pendingChapterJump: pendingChapterJump,
+                    pendingTOCLinkJump: pendingTOCLinkJump,
                     diagnosticPageTurnRequest: diagnosticPageTurnRequest,
                     highlights: store.highlights[bookId] ?? [],
                     testCurlPageLabels: model.testCurlPageLabels,
@@ -205,10 +208,11 @@ struct ReaderView: View {
             if hiddenPaginationRunning, let epubURL = model.epubURL {
                 ReadiumReaderContainer(
                     epubURL: epubURL,
-                    settings: model.settings,
+                    settings: hiddenPaginationSettings,
                     initialProgress: 0,
                     pendingLocatorJSON: nil,
                     pendingChapterJump: hiddenPaginationPendingChapterJump,
+                    pendingTOCLinkJump: nil,
                     diagnosticPageTurnRequest: nil,
                     highlights: [],
                     testCurlPageLabels: nil,
@@ -325,7 +329,14 @@ struct ReaderView: View {
                 },
                 onLocatorJump: { locatorJSON in
                     prepareReturnLocation()
+                    deferAutomaticHiddenPaginationAfterForegroundJump()
                     pendingLocatorJSON = locatorJSON
+                    showContents = false
+                },
+                onTOCLinkJump: { href, title in
+                    prepareReturnLocation()
+                    deferAutomaticHiddenPaginationAfterForegroundJump()
+                    pendingTOCLinkJump = ReadiumTOCLinkJump(href: href, title: title)
                     showContents = false
                 }
             )
@@ -450,6 +461,8 @@ struct ReaderView: View {
                     .font(.system(size: 15, weight: .heavy))
                     .foregroundStyle(model.theme.foregroundColor)
                     .lineLimit(1)
+                    .minimumScaleFactor(0.58)
+                    .allowsTightening(true)
                     .monospacedDigit()
                 Text(chapterTimeRemainingText)
                     .font(.system(size: 11, weight: .semibold))
@@ -718,13 +731,38 @@ struct ReaderView: View {
         }
     }
 
+    /// Settings for the off-screen pagination navigator. It only measures page
+    /// counts, so it must never run the Test Curl preload machinery: that navigator
+    /// is perpetually loading as it churns through every chapter, so each prep bails
+    /// with `skipped=activeLoadingIndicator` and reschedules, and with one retry per
+    /// location change this snowballs into a retry storm that starves the foreground
+    /// reader (e.g. TOC jumps). Forcing `.none` keeps the hidden navigator silent.
+    private var hiddenPaginationSettings: ReaderSettings {
+        var settings = model.settings
+        settings.pageAnim = .none
+        return settings
+    }
+
     private func jumpToChapter(_ chapter: Int, page: Int?) {
         prepareReturnLocation()
+        deferAutomaticHiddenPaginationAfterForegroundJump()
         if model.epubURL != nil {
             pendingChapterJump = ReadiumChapterJump(chapterIndex: chapter)
             return
         }
         model.go(to: chapter, page: page)
+    }
+
+    private func deferAutomaticHiddenPaginationAfterForegroundJump() {
+        automaticHiddenPaginationResumeTask?.cancel()
+        if hiddenPaginationRunning {
+            finishHiddenPagination(cancelled: true)
+        }
+        automaticHiddenPaginationResumeTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            automaticHiddenPaginationResumeTask = nil
+            requestAutomaticHiddenPaginationIfNeeded()
+        }
     }
 
     private func prepareReturnLocation() {
@@ -1082,6 +1120,7 @@ struct ReaderView: View {
               !showSearch,
               !isPageAuditRunning,
               !hiddenPaginationRunning,
+              automaticHiddenPaginationResumeTask == nil,
               let settings = model.paginatedSettings
         else { return }
 
@@ -1325,6 +1364,8 @@ struct ReaderView: View {
     }
 
     private func stopHiddenPaginationForReaderExit() {
+        automaticHiddenPaginationResumeTask?.cancel()
+        automaticHiddenPaginationResumeTask = nil
         guard hiddenPaginationRunning else { return }
         pageAuditTask?.cancel()
         pageAuditTask = nil
@@ -1913,6 +1954,9 @@ final class ReaderModel: ObservableObject {
 
     var chapterPagesLeftText: String {
         if epubURL != nil {
+            if let sectionText = sectionPagesLeftText {
+                return sectionText
+            }
             if let pageState = readiumChapterPageState, pageState.totalPages > 0 {
                 let left = max(0, pageState.totalPages - pageState.currentPage)
                 if left == 0 { return "End of chapter" }
@@ -1928,6 +1972,16 @@ final class ReaderModel: ObservableObject {
         let left = max(0, totalPages - currentPage)
         if left == 0 { return "End of chapter" }
         return "\(left) page\(left == 1 ? "" : "s") left in chapter"
+    }
+
+    private var sectionPagesLeftText: String? {
+        guard let section = currentTOCSectionRange,
+              let currentPage = paginatedBookCurrentPage,
+              section.endPage >= section.startPage
+        else { return nil }
+        let left = max(0, section.endPage - currentPage)
+        if left == 0 { return "End of \(section.kind)" }
+        return "\(left) page\(left == 1 ? "" : "s") left in \(section.kind)"
     }
 
     private var estimatedChapterPageCounts: [Int] {
@@ -2258,6 +2312,24 @@ final class ReaderModel: ObservableObject {
         return fields.joined(separator: "\t")
     }
 
+    func generatedPageCount(forChapterIndex chapterIndex: Int) -> Int {
+        guard let settings = paginatedSettings,
+              paginatedSettingsKey == paginationKey,
+              settings.pagesPerChapter.indices.contains(chapterIndex)
+        else { return 1 }
+        return max(1, settings.pagesPerChapter[chapterIndex])
+    }
+
+    func generatedPageNumber(forChapterIndex chapterIndex: Int, pageOffsetInChapter: Int = 0) -> Int? {
+        guard let settings = paginatedSettings,
+              paginatedSettingsKey == paginationKey,
+              settings.chapterPageOffsets.indices.contains(chapterIndex),
+              settings.pagesPerChapter.indices.contains(chapterIndex)
+        else { return nil }
+        let chapterOffset = min(max(0, pageOffsetInChapter), max(0, settings.pagesPerChapter[chapterIndex] - 1))
+        return max(1, min(settings.totalPages, settings.chapterPageOffsets[chapterIndex] + 1 + chapterOffset))
+    }
+
     private var rawPaginatedBookCurrentPage: Int? {
         guard let settings = paginatedSettings,
               paginatedSettingsKey == paginationKey,
@@ -2267,6 +2339,88 @@ final class ReaderModel: ObservableObject {
         let offset = settings.chapterPageOffsets[state.resourceIndex]
         let page = offset + max(1, state.currentPage)
         return max(1, min(settings.totalPages, page))
+    }
+
+    private struct TOCSectionRange {
+        let kind: String
+        let startPage: Int
+        let endPage: Int
+    }
+
+    private var currentTOCSectionRange: TOCSectionRange? {
+        guard let package,
+              let currentResource = readiumResourceIndex,
+              let settings = paginatedSettings,
+              paginatedSettingsKey == paginationKey,
+              settings.pagesPerChapter.indices.contains(currentResource),
+              settings.chapterPageOffsets.indices.contains(currentResource)
+        else { return nil }
+
+        let rows = package.toc.enumerated().compactMap { offset, entry -> (offset: Int, title: String, chapterIndex: Int, depth: Int)? in
+            guard let chapterIndex = spineIndex(for: entry.href, in: package) else { return nil }
+            let title = entry.label.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !title.isEmpty else { return nil }
+            return (offset, title, chapterIndex, max(0, entry.depth))
+        }
+
+        guard let sectionRow = rows.first(where: { row in
+            row.chapterIndex == currentResource && rowIsSectionStart(row, rows: rows)
+        }) else { return nil }
+
+        let endChapter = sectionEndChapterIndex(for: sectionRow, rows: rows, chapterCount: settings.pagesPerChapter.count)
+        guard endChapter >= sectionRow.chapterIndex,
+              settings.chapterPageOffsets.indices.contains(endChapter),
+              settings.pagesPerChapter.indices.contains(endChapter)
+        else { return nil }
+
+        let startPage = settings.chapterPageOffsets[sectionRow.chapterIndex] + 1
+        let endPage = settings.chapterPageOffsets[endChapter] + max(1, settings.pagesPerChapter[endChapter])
+        return TOCSectionRange(
+            kind: sectionKind(for: sectionRow.title),
+            startPage: max(1, min(settings.totalPages, startPage)),
+            endPage: max(1, min(settings.totalPages, endPage))
+        )
+    }
+
+    private func rowIsSectionStart(_ row: (offset: Int, title: String, chapterIndex: Int, depth: Int), rows: [(offset: Int, title: String, chapterIndex: Int, depth: Int)]) -> Bool {
+        let nextPeerOffset = rows.first { candidate in
+            candidate.offset > row.offset && candidate.depth <= row.depth
+        }?.offset ?? Int.max
+        if rows.contains(where: { $0.offset > row.offset && $0.offset < nextPeerOffset && $0.depth > row.depth }) {
+            return true
+        }
+        let lower = row.title.lowercased()
+        return lower.hasPrefix("part ") || lower == "interludes" || lower.hasPrefix("interlude")
+    }
+
+    private func sectionEndChapterIndex(for row: (offset: Int, title: String, chapterIndex: Int, depth: Int), rows: [(offset: Int, title: String, chapterIndex: Int, depth: Int)], chapterCount: Int) -> Int {
+        let nextPeer = rows.first { candidate in
+            candidate.offset > row.offset && candidate.depth <= row.depth && candidate.chapterIndex > row.chapterIndex
+        }
+        let exclusiveEnd = nextPeer?.chapterIndex ?? chapterCount
+        return max(row.chapterIndex, min(chapterCount - 1, exclusiveEnd - 1))
+    }
+
+    private func sectionKind(for title: String) -> String {
+        let lower = title.lowercased()
+        if lower.contains("interlude") { return "interlude" }
+        if lower.hasPrefix("part ") { return "part" }
+        return "section"
+    }
+
+    private func spineIndex(for href: String, in package: EPUBPackage) -> Int? {
+        let target = normalizedHref(href)
+        return package.spine.firstIndex { entry in
+            let spineHref = normalizedHref(entry.href)
+            return target == spineHref || target.hasPrefix("\(spineHref)#")
+        }
+    }
+
+    private func normalizedHref(_ href: String) -> String {
+        let decoded = href.removingPercentEncoding ?? href
+        return decoded
+            .replacingOccurrences(of: "\\", with: "/")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func boundedPaginatedBookPage(_ page: Int) -> Int {

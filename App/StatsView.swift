@@ -70,7 +70,7 @@ struct StatsView: View {
                         onChooseBackupFolder: { showBackupFolderPicker = true },
                         onClearBackupFolder: {
                             store.clearBackupFolder()
-                            showToast("Backups will save to On My iPhone / BookMark")
+                            showToast("Backups will save to On My iPhone / BookSmarts")
                         },
                         backupFolderName: store.backupFolderName,
                         lastBackupStatus: lastBackupStatus
@@ -317,7 +317,7 @@ struct StatsView: View {
                     .font(.system(size: 10, weight: .bold))
                     .tracking(0.7)
                     .foregroundStyle(Theme.subtle)
-                Text(store.backupFolderName ?? "On My iPhone / BookMark")
+                Text(store.backupFolderName ?? "On My iPhone / BookSmarts")
                     .font(.system(size: 13, weight: .heavy))
                     .foregroundStyle(Theme.text)
                     .lineLimit(1)
@@ -340,7 +340,7 @@ struct StatsView: View {
                 Button {
                     runStatsToolAction {
                         store.clearBackupFolder()
-                        showToast("Backups will save to On My iPhone / BookMark")
+                        showToast("Backups will save to On My iPhone / BookSmarts")
                     }
                 } label: {
                     Text("Reset")
@@ -1188,9 +1188,9 @@ struct DataAndBackupCard: View {
             }
             VStack(spacing: 2) {
                 if backupFolderName == nil {
-                    Text("Local database active. Backups appear in Files › On My iPhone › BookMark.")
+                    Text("Local database active. Backups appear in Files › On My iPhone › BookSmarts.")
                 } else {
-                    Text("Pick a folder outside the app (e.g. iCloud Drive) so backups survive if you delete BookMark.")
+                    Text("Pick a folder outside the app (e.g. iCloud Drive) so backups survive if you delete BookSmarts.")
                 }
                 Text(lastBackupStatus ?? "Never backed up yet.")
             }
@@ -1212,7 +1212,7 @@ struct DataAndBackupCard: View {
                     .font(.system(size: 10, weight: .bold))
                     .tracking(0.7)
                     .foregroundStyle(Theme.subtle)
-                Text(backupFolderName ?? "On My iPhone / BookMark")
+                Text(backupFolderName ?? "On My iPhone / BookSmarts")
                     .font(.system(size: 13, weight: .heavy))
                     .foregroundStyle(Theme.text)
                     .lineLimit(1)

@@ -17,6 +17,7 @@
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "200EF8A72FE102CE00DCA2F9"
                BuildableName = "BookMarkWidgetExtension.appex"
+               BlueprintName = "BookMarkWidgetExtension"
                ReferencedContainer = "container:BookMark.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -50,6 +51,7 @@
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "2079609D2FE7172800EFF622"
                BuildableName = "BookMarkTests.xctest"
+               BlueprintName = "BookMarkTests"
                ReferencedContainer = "container:BookMark.xcodeproj">
             </BuildableReference>
          </TestableReference>

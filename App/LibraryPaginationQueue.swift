@@ -47,6 +47,7 @@ struct LibraryPaginationQueueView: View {
                     initialProgress: 0,
                     pendingLocatorJSON: nil,
                     pendingChapterJump: pendingChapterJump,
+                    pendingTOCLinkJump: nil,
                     diagnosticPageTurnRequest: nil,
                     highlights: [],
                     testCurlPageLabels: nil,

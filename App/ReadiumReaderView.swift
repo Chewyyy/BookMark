@@ -42,6 +42,18 @@ struct ReadiumChapterJump: Equatable {
     }
 }
 
+struct ReadiumTOCLinkJump: Equatable {
+    let id: UUID
+    let href: String
+    let title: String?
+
+    init(href: String, title: String?) {
+        self.id = UUID()
+        self.href = href
+        self.title = title
+    }
+}
+
 struct ReadiumDiagnosticPageTurnRequest: Equatable {
     let id: UUID
     let direction: Int
@@ -63,6 +75,7 @@ struct ReadiumReaderContainer: View {
     let initialProgress: Double
     let pendingLocatorJSON: String?
     let pendingChapterJump: ReadiumChapterJump?
+    let pendingTOCLinkJump: ReadiumTOCLinkJump?
     let diagnosticPageTurnRequest: ReadiumDiagnosticPageTurnRequest?
     let highlights: [Highlight]
     let testCurlPageLabels: TestCurlPageLabels?
@@ -91,6 +104,7 @@ struct ReadiumReaderContainer: View {
                     bridge: bridge,
                     pendingLocatorJSON: pendingLocatorJSON,
                     pendingChapterJump: pendingChapterJump,
+                    pendingTOCLinkJump: pendingTOCLinkJump,
                     highlights: highlights,
                     testCurlPageLabels: testCurlPageLabels,
                     showsChrome: showsChrome,
@@ -577,6 +591,7 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
     let bridge: ReadiumNavigatorBridge
     let pendingLocatorJSON: String?
     let pendingChapterJump: ReadiumChapterJump?
+    let pendingTOCLinkJump: ReadiumTOCLinkJump?
     let highlights: [Highlight]
     let testCurlPageLabels: TestCurlPageLabels?
     let showsChrome: Bool
@@ -720,7 +735,21 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
            let locator = try? Locator(json: JSONValue(jsonString: pendingLocatorJSON, warnings: nil), warnings: nil) {
             context.coordinator.lastJumpLocatorJSON = pendingLocatorJSON
             Task {
-                _ = await navigator.go(to: locator, options: NavigatorGoOptions(animated: true))
+                // Discrete jumps (search / locator) don't benefit from an animated
+                // slide across resources — it only adds reflow work — so jump directly.
+                _ = await navigator.go(to: locator, options: NavigatorGoOptions(animated: false))
+            }
+        }
+        if let pendingTOCLinkJump,
+           pendingTOCLinkJump.id != context.coordinator.lastTOCLinkJumpID {
+            context.coordinator.lastTOCLinkJumpID = pendingTOCLinkJump.id
+            Task {
+                let link = Link(
+                    href: pendingTOCLinkJump.href,
+                    mediaType: MediaType("application/xhtml+xml"),
+                    title: pendingTOCLinkJump.title
+                )
+                _ = await navigator.go(to: link, options: NavigatorGoOptions(animated: false))
             }
         }
         if let pendingChapterJump,
@@ -729,7 +758,9 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
            let locator = positionsByResource[pendingChapterJump.chapterIndex].first {
             context.coordinator.lastChapterJumpID = pendingChapterJump.id
             Task {
-                _ = await navigator.go(to: locator, options: NavigatorGoOptions(animated: true))
+                // TOC chapter jumps land on a new resource; animating the transition
+                // forces extra intermediate rendering, so jump directly instead.
+                _ = await navigator.go(to: locator, options: NavigatorGoOptions(animated: false))
             }
         }
     }
@@ -799,6 +830,7 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
         var lastPreferences: EPUBPreferences?
         var lastJumpLocatorJSON: String?
         var lastChapterJumpID: UUID?
+        var lastTOCLinkJumpID: UUID?
         var positionsByResource: [[Locator]]
         var publisherPages: [ReadiumPublisherPage]
         var publication: Publication

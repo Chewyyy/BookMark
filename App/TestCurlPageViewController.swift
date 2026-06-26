@@ -103,6 +103,10 @@ final class TestCurlPageViewController: UIViewController, UIPageViewControllerDa
     private let onCenterTap: () -> Void
     private let onTurnCompleted: (Int, Bool) -> Void
     private(set) var state: State = .idle
+    /// True once the page-curl controller has completed at least one layout pass.
+    /// An animated `.pageCurl` transition requested before this is set makes UIKit
+    /// expect a two-controller mid-spine spread and throws, so turns wait for it.
+    private var hasCompletedInitialLayout = false
 
     init(currentImage: UIImage,
          previousImage: UIImage?,
@@ -160,6 +164,15 @@ final class TestCurlPageViewController: UIViewController, UIPageViewControllerDa
         log("interactiveSurfaceReady previous=\(previousPage != nil) next=\(nextPage != nil)")
     }
 
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        // Once the page-curl controller has a non-zero bounds it has resolved its
+        // spine and a single-controller animated turn is safe.
+        if !hasCompletedInitialLayout, view.window != nil, !view.bounds.isEmpty {
+            hasCompletedInitialLayout = true
+        }
+    }
+
     func updateColors(backgroundColor color: UIColor, labelColor: UIColor) {
         backgroundColor = color
         self.labelColor = labelColor
@@ -185,6 +198,20 @@ final class TestCurlPageViewController: UIViewController, UIPageViewControllerDa
         guard state == .idle else { return }
         let destination = direction > 0 ? nextPage : previousPage
         guard let destination else {
+            onTurnCompleted(direction, false)
+            return
+        }
+
+        // The page-curl UIPageViewController must finish its initial layout before an
+        // animated transition. If it hasn't (e.g. the user taps the instant the overlay
+        // becomes ready, right at launch), force a layout pass; if it still isn't on a
+        // window, decline the turn rather than crash with an NSInvalidArgumentException
+        // ("number of view controllers provided (1) doesn't match the number required (2)").
+        if !hasCompletedInitialLayout {
+            view.layoutIfNeeded()
+        }
+        guard hasCompletedInitialLayout, pageViewController.viewControllers?.count == 1 else {
+            log("programmaticTurn declined notReady direction=\(direction)")
             onTurnCompleted(direction, false)
             return
         }

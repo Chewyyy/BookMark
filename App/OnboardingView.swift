@@ -255,7 +255,7 @@ struct OnboardingView: View {
                     .font(.system(size: 56))
                     .foregroundStyle(.white.opacity(0.92))
                     .padding(.bottom, 26)
-                Text("BookMark")
+                Text("BookSmarts")
                     .font(.system(size: 46, weight: .heavy, design: .serif))
                     .foregroundStyle(.white)
                 Text("Read more. Remember everything.")
@@ -282,7 +282,7 @@ struct OnboardingView: View {
     private var benefitsPage: some View {
         OBPage(palette: palette, kicker: "Welcome") {
             OBHeadline("A reading habit that sticks", palette: palette)
-            OBParagraph("BookMark turns reading into something you can see and feel proud of. Every session you read is tracked automatically while you stay lost in the story.", palette: palette)
+            OBParagraph("BookSmarts turns reading into something you can see and feel proud of. Every session you read is tracked automatically while you stay lost in the story.", palette: palette)
             VStack(alignment: .leading, spacing: 14) {
                 OBBullet(icon: "flame.fill", title: "Build daily streaks", text: "Hit a small daily goal and watch your streak grow.", palette: palette)
                 OBBullet(icon: "chart.bar.fill", title: "See your stats", text: "Time read, pages, reading speed, and pace over time.", palette: palette)
@@ -314,7 +314,7 @@ struct OnboardingView: View {
             }
             .padding(.vertical, 18)
 
-            OBParagraph("We’ve set aside a short sample so you can start the moment you finish here. To add your own books, open any .epub file in BookMark — or point it at a folder and new books import themselves.", palette: palette)
+            OBParagraph("We’ve set aside a short sample so you can start the moment you finish here. To add your own books, open any .epub file in BookSmarts — or point it at a folder and new books import themselves.", palette: palette)
         }
     }
 
@@ -338,7 +338,7 @@ struct OnboardingView: View {
     private var watchFolderPage: some View {
         OBPage(palette: palette, kicker: "Automatic imports") {
             OBHeadline("Watch a folder for new books", palette: palette)
-            OBParagraph("Pick a folder — like an iCloud Drive or Dropbox folder where you save EPUBs — and BookMark imports anything new it finds, every time you open the app. Drop a book in from your Mac and it just appears here.", palette: palette)
+            OBParagraph("Pick a folder — like an iCloud Drive or Dropbox folder where you save EPUBs — and BookSmarts imports anything new it finds, every time you open the app. Drop a book in from your Mac and it just appears here.", palette: palette)
 
             folderRow(
                 isSet: store.watchedFolderName != nil,
@@ -354,7 +354,7 @@ struct OnboardingView: View {
     private var backupFolderPage: some View {
         OBPage(palette: palette, kicker: "Keep your progress safe") {
             OBHeadline("Back up to a folder you own", palette: palette)
-            OBParagraph("Your library, sessions, streaks, and bookmarks are saved automatically. Point backups at a folder outside the app — like iCloud Drive — and they survive even if BookMark is deleted or you move to a new phone.", palette: palette)
+            OBParagraph("Your library, sessions, streaks, and bookmarks are saved automatically. Point backups at a folder outside the app — like iCloud Drive — and they survive even if BookSmarts is deleted or you move to a new phone.", palette: palette)
 
             folderRow(
                 isSet: store.backupFolderName != nil,
@@ -362,7 +362,7 @@ struct OnboardingView: View {
                 chooseTitle: store.backupFolderName == nil ? "Choose Folder\u{2026}" : "Change Folder",
                 action: { showBackupPicker = true }
             )
-            OBLaterHint("Until you choose one, backups stay in On My iPhone \u{203A} BookMark.", palette: palette)
+            OBLaterHint("Until you choose one, backups stay in On My iPhone \u{203A} BookSmarts.", palette: palette)
         }
     }
 
@@ -397,7 +397,7 @@ struct OnboardingView: View {
     private var reminderPage: some View {
         OBPage(palette: palette, kicker: "Gentle nudges") {
             OBHeadline("A reminder, only when you need it", palette: palette)
-            OBParagraph("Pick a time for a daily nudge. BookMark only sends it if you still have reading minutes left for the day — never when you\u{2019}ve already hit your goal.", palette: palette)
+            OBParagraph("Pick a time for a daily nudge. BookSmarts only sends it if you still have reading minutes left for the day — never when you\u{2019}ve already hit your goal.", palette: palette)
 
             VStack(alignment: .leading, spacing: 14) {
                 Toggle(isOn: $reminderEnabled) {
@@ -422,7 +422,7 @@ struct OnboardingView: View {
             .background(palette.foregroundColor.opacity(0.05), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             .padding(.top, 18)
 
-            OBBullet(icon: "moon.stars.fill", title: "Last-chance heads up", text: "If the day is almost over and you\u{2019}re still short, BookMark sends one final nudge with just enough buffer to finish before midnight and keep your streak.", palette: palette)
+            OBBullet(icon: "moon.stars.fill", title: "Last-chance heads up", text: "If the day is almost over and you\u{2019}re still short, BookSmarts sends one final nudge with just enough buffer to finish before midnight and keep your streak.", palette: palette)
                 .padding(.top, 18)
         }
     }
@@ -431,7 +431,7 @@ struct OnboardingView: View {
     private var statsPage: some View {
         OBPage(palette: palette, kicker: "Know your reading") {
             OBHeadline("Stats that actually mean something", palette: palette)
-            Text("BookMark turns your reading into a simple dashboard: time, pages, streaks, pace, and yearly goals.")
+            Text("BookSmarts turns your reading into a simple dashboard: time, pages, streaks, pace, and yearly goals.")
                 .font(.system(size: 14.5, weight: .regular, design: .serif))
                 .lineSpacing(3)
                 .foregroundStyle(palette.foregroundColor.opacity(0.84))
@@ -1068,7 +1068,7 @@ private struct OnboardingAnimationReaderDemo: View {
     @State private var isScrollAnimating = false
 
     private let samples = [
-        "The room was quiet except for the soft turn of a page. BookMark keeps the words centered and the controls out of the way, so the book feels like the main event.",
+        "The room was quiet except for the soft turn of a page. BookSmarts keeps the words centered and the controls out of the way, so the book feels like the main event.",
         "When you swipe, the next page should already feel ready beneath your thumb. Try each style here, then keep the one that feels natural.",
         "A good reader disappears while you read. Your choice here becomes the default page turn when the tutorial ends.",
     ]

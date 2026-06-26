@@ -67,7 +67,7 @@ enum AutoBackup {
         } else {
             guard let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return nil }
             target = docs
-            locationLabel = "On My iPhone / BookMark"
+            locationLabel = "On My iPhone / BookSmarts"
         }
 
         // 1) Always-current snapshot

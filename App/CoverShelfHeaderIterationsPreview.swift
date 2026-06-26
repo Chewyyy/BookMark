@@ -123,7 +123,7 @@ private struct CleanFloatingCoversHeaderIteration: View {
             VStack(alignment: .leading, spacing: 7) {
                 HStack(spacing: 10) {
                     VStack(alignment: .leading, spacing: 1) {
-                        Text("BookMark")
+                        Text("BookSmarts")
                             .font(.system(size: 24, weight: .heavy))
                             .foregroundStyle(Theme.text)
                         Text("Pick up where you left off")
@@ -169,7 +169,7 @@ private struct CornerWatermarkHeaderIteration: View {
 
             HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("BookMark")
+                    Text("BookSmarts")
                         .font(.system(size: 24, weight: .heavy))
                         .foregroundStyle(Theme.text)
                     Text("4 books in progress")
@@ -194,7 +194,7 @@ private struct ThinCoverRailHeaderIteration: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("BookMark")
+                    Text("BookSmarts")
                         .font(.system(size: 23, weight: .heavy))
                         .foregroundStyle(Theme.text)
                     Text("Your reading shelf")
@@ -230,7 +230,7 @@ private struct CurrentBookHeaderIteration: View {
                 .frame(width: 50, height: 70)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("BookMark")
+                Text("BookSmarts")
                     .font(.system(size: 22, weight: .heavy))
                     .foregroundStyle(Theme.text)
                 Text("Reading now")
@@ -274,7 +274,7 @@ private struct CompactStackHeaderIteration: View {
             .frame(width: 52, height: 54)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("BookMark")
+                Text("BookSmarts")
                     .font(.system(size: 23, weight: .heavy))
                     .foregroundStyle(Theme.text)
                 Text("12 books on your shelf")
@@ -300,7 +300,7 @@ private struct ShelfHeaderTopline: View {
     var body: some View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 1) {
-                Text("BookMark")
+                Text("BookSmarts")
                     .font(.system(size: 23, weight: .heavy))
                     .foregroundStyle(Theme.text)
                 Text(subtitle)

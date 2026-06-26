@@ -106,7 +106,7 @@ struct LibraryView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            Text("BookMark")
+            Text("BookSmarts")
                 .font(.system(size: 23, weight: .heavy))
                 .tracking(-0.5)
             Spacer()

@@ -82,7 +82,7 @@ private struct CompactBrandHeader: View {
             .frame(width: 34, height: 34)
 
             VStack(alignment: .leading, spacing: 1) {
-                Text("BookMark")
+                Text("BookSmarts")
                     .font(.system(size: 22, weight: .heavy))
                     .foregroundStyle(Theme.text)
                 Text("Library")
@@ -146,7 +146,7 @@ private struct CoverShelfHeader: View {
         VStack(alignment: .leading, spacing: 11) {
             HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("BookMark")
+                    Text("BookSmarts")
                         .font(.system(size: 23, weight: .heavy))
                         .foregroundStyle(Theme.text)
                     Text("Back to your shelf")

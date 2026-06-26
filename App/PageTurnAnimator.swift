@@ -38,6 +38,10 @@ final class PageTurnAnimator {
     private(set) var isAnimating: Bool = false
     private var isTestCurlEnabled = false
     private var isPreparingTestCurl = false
+    /// Guards against scheduling more than one pending Test Curl prep/retry at a
+    /// time so location-change bursts can't snowball into a retry storm.
+    private var isTestCurlPrepScheduled = false
+    private var activeLoadingRetryCount = 0
     private weak var testCurlController: TestCurlPageViewController?
 
     // Wait long enough after navigation for WKWebView to paint the new page.
@@ -129,10 +133,12 @@ final class PageTurnAnimator {
     }
 
     func refreshTestCurlIfReady() {
-        guard isTestCurlEnabled, !isPreparingTestCurl else { return }
+        guard isTestCurlEnabled, !isPreparingTestCurl, !isTestCurlPrepScheduled else { return }
         guard canPrepareTestCurl?() ?? true else { return }
+        isTestCurlPrepScheduled = true
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 160_000_000)
+            self.isTestCurlPrepScheduled = false
             guard self.isTestCurlEnabled, !self.isPreparingTestCurl else { return }
             guard self.canPrepareTestCurl?() ?? true else { return }
             await self.prepareTestCurlOverlay()
@@ -140,12 +146,28 @@ final class PageTurnAnimator {
     }
 
     private func scheduleTestCurlRetry() {
+        // Coalesce: only one prep/retry may be pending at a time. Without this,
+        // a navigator that stays in a loading state (so every prep bails) combined
+        // with one refresh per location change snowballs into a retry storm.
+        guard !isTestCurlPrepScheduled else { return }
+        isTestCurlPrepScheduled = true
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 220_000_000)
+            try? await Task.sleep(nanoseconds: self.testCurlRetryDelayNanoseconds())
+            self.isTestCurlPrepScheduled = false
             guard self.isTestCurlEnabled, !self.isPreparingTestCurl else { return }
             guard self.canPrepareTestCurl?() ?? true else { return }
             await self.prepareTestCurlOverlay()
         }
+    }
+
+    private func testCurlRetryDelayNanoseconds() -> UInt64 {
+        let retry = min(activeLoadingRetryCount, 4)
+        let seconds = 0.35 * pow(1.55, Double(retry))
+        return UInt64(seconds * 1_000_000_000)
+    }
+
+    private func resetTestCurlRetryState() {
+        activeLoadingRetryCount = 0
     }
 
     private func removeTestCurlOverlay() {
@@ -155,6 +177,7 @@ final class PageTurnAnimator {
         controller.removeFromParent()
         testCurlController = nil
         isPreparingTestCurl = false
+        resetTestCurlRetryState()
         onTestCurlReadyChange?(false)
     }
 
@@ -164,12 +187,16 @@ final class PageTurnAnimator {
         isPreparingTestCurl = true
         defer { isPreparingTestCurl = false }
 
-        logTestCurl("prepareOverlay locator=\(latestLocationDescription())")
         guard !containsActiveActivityIndicator(in: nav.view) else {
-            logTestCurl("prepareOverlay skipped=activeLoadingIndicator")
+            if activeLoadingRetryCount == 0 {
+                logTestCurl("prepareOverlay skipped=activeLoadingIndicator locator=\(latestLocationDescription())")
+            }
+            activeLoadingRetryCount += 1
             scheduleTestCurlRetry()
             return
         }
+        resetTestCurlRetryState()
+        logTestCurl("prepareOverlay locator=\(latestLocationDescription())")
         guard let currentImage = captureImage(of: nav.view) else {
             logTestCurl("prepareOverlay currentSnapshotAvailable=false")
             return

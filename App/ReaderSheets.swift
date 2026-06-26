@@ -1,3 +1,4 @@
+import Foundation
 import ReadiumShared
 import SwiftUI
 
@@ -182,7 +183,7 @@ struct ReaderSettingsSheet: View {
                 }
             }
 
-            Text("Slide uses Readium's native page advance. Fade and Rigid use BookMark's transition layer. Realistic uses UIKit's built-in page curl. Scroll turns pages with an up/down swipe. Tap the selected option again for no animation.")
+            Text("Slide uses Readium's native page advance. Fade and Rigid use BookSmarts' transition layer. Realistic uses UIKit's built-in page curl. Scroll turns pages with an up/down swipe. Tap the selected option again for no animation.")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .padding(.top, 4)
@@ -597,8 +598,10 @@ struct ReaderSearchSheet: View {
 private struct ReaderContentsChapterRow: Identifiable {
     let id: String
     let title: String
+    let href: String?
     let chapterIndex: Int
     let depth: Int
+    let pageOffsetInChapter: Int
 }
 
 struct ReaderContentsSheet: View {
@@ -607,6 +610,7 @@ struct ReaderContentsSheet: View {
     let initialTab: ContentTab
     let onJump: (Int, Int?) -> Void
     let onLocatorJump: (String) -> Void
+    let onTOCLinkJump: (String, String?) -> Void
     var onSelectChapter: (Int) -> Void { { onJump($0, nil) } }
     @EnvironmentObject private var store: Store
     @State private var tab: ContentTab = .chapters
@@ -651,7 +655,7 @@ struct ReaderContentsSheet: View {
                     if !rows.isEmpty {
                         ForEach(rows) { row in
                             Button {
-                                onSelectChapter(row.chapterIndex)
+                                selectChapterRow(row)
                             } label: {
                                 HStack(spacing: 10) {
                                     Text(row.title)
@@ -659,16 +663,24 @@ struct ReaderContentsSheet: View {
                                         .foregroundStyle(model.theme.foregroundColor)
                                         .lineLimit(2)
                                         .multilineTextAlignment(.leading)
-                                    Spacer()
-                                    if row.chapterIndex == model.chapterIndex {
-                                        Image(systemName: "book.fill")
-                                            .foregroundStyle(model.theme.accentColor)
+                                    Spacer(minLength: 12)
+                                    HStack(spacing: 8) {
+                                        if let pageText = pageNumberText(for: row) {
+                                            Text(pageText)
+                                                .font(.system(size: 13, weight: .semibold))
+                                                .foregroundStyle(model.theme.foregroundColor.opacity(0.58))
+                                                .monospacedDigit()
+                                        }
+                                        if isCurrentRow(row) {
+                                            Image(systemName: "book.fill")
+                                                .foregroundStyle(model.theme.accentColor)
+                                        }
                                     }
                                 }
                                 .padding(.leading, 16 + CGFloat(min(row.depth, 3)) * 28)
                                 .padding(.trailing, 16)
                                 .padding(.vertical, 14)
-                                .background(chapterRowBackground(isCurrent: row.chapterIndex == model.chapterIndex))
+                                .background(chapterRowBackground(isCurrent: isCurrentRow(row)))
                                 .overlay(alignment: .bottom) {
                                     Rectangle()
                                         .fill(Color.primary.opacity(0.12))
@@ -703,15 +715,20 @@ struct ReaderContentsSheet: View {
 
     private var chapterRows: [ReaderContentsChapterRow] {
         guard let pkg = model.package, !pkg.spine.isEmpty else { return [] }
-        let tocRows = pkg.toc.enumerated().compactMap { offset, entry -> ReaderContentsChapterRow? in
+        let mappedTOCRows = pkg.toc.enumerated().compactMap { offset, entry -> (offset: Int, title: String, href: String, chapterIndex: Int, depth: Int)? in
             guard let chapterIndex = spineIndex(for: entry.href, in: pkg) else { return nil }
             let title = entry.label.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !title.isEmpty else { return nil }
-            return ReaderContentsChapterRow(
-                id: "toc-\(offset)-\(chapterIndex)",
-                title: title,
-                chapterIndex: chapterIndex,
-                depth: max(0, entry.depth)
+            return (offset, title, entry.href, chapterIndex, max(0, entry.depth))
+        }
+        let tocRows = mappedTOCRows.map { row in
+            ReaderContentsChapterRow(
+                id: "toc-\(row.offset)-\(row.chapterIndex)",
+                title: row.title,
+                href: row.href,
+                chapterIndex: row.chapterIndex,
+                depth: row.depth,
+                pageOffsetInChapter: tocPageOffsetInChapter(for: row, rows: mappedTOCRows)
             )
         }
         if !tocRows.isEmpty { return tocRows }
@@ -720,8 +737,10 @@ struct ReaderContentsSheet: View {
             ReaderContentsChapterRow(
                 id: "spine-\(idx)",
                 title: chapterDisplayTitle(idx: idx, fallback: entry.title),
+                href: entry.href,
                 chapterIndex: idx,
-                depth: 0
+                depth: 0,
+                pageOffsetInChapter: 0
             )
         }
     }
@@ -731,12 +750,46 @@ struct ReaderContentsSheet: View {
     }
 
     private func chapterTitleWeight(_ row: ReaderContentsChapterRow) -> Font.Weight {
-        if row.chapterIndex == model.chapterIndex { return .heavy }
+        if isCurrentRow(row) { return .heavy }
         return row.depth == 0 ? .heavy : .semibold
     }
 
+    private func pageNumberText(for row: ReaderContentsChapterRow) -> String? {
+        guard let page = model.generatedPageNumber(forChapterIndex: row.chapterIndex, pageOffsetInChapter: row.pageOffsetInChapter) else { return nil }
+        return model.paginatedSettingsIsComplete ? "\(page)" : "~\(page)"
+    }
+
+    private func selectChapterRow(_ row: ReaderContentsChapterRow) {
+        if let href = row.href, !href.isEmpty {
+            onTOCLinkJump(href, row.title)
+            return
+        }
+        onSelectChapter(row.chapterIndex)
+    }
+
+    private func isCurrentRow(_ row: ReaderContentsChapterRow) -> Bool {
+        if let rowPage = model.generatedPageNumber(forChapterIndex: row.chapterIndex, pageOffsetInChapter: row.pageOffsetInChapter),
+           let currentPage = model.paginatedBookCurrentPage {
+            return rowPage == currentPage
+        }
+        return row.pageOffsetInChapter == 0 && row.chapterIndex == model.chapterIndex
+    }
+
+
+    private func tocPageOffsetInChapter(
+        for row: (offset: Int, title: String, href: String, chapterIndex: Int, depth: Int),
+        rows: [(offset: Int, title: String, href: String, chapterIndex: Int, depth: Int)]
+    ) -> Int {
+        let sameChapterRows = rows.filter { $0.chapterIndex == row.chapterIndex }.sorted { $0.offset < $1.offset }
+        guard sameChapterRows.count > 1,
+              let ordinal = sameChapterRows.firstIndex(where: { $0.offset == row.offset })
+        else { return 0 }
+        return min(max(0, ordinal), max(0, model.generatedPageCount(forChapterIndex: row.chapterIndex) - 1))
+    }
+
     private func scrollToCurrentChapter(_ proxy: ScrollViewProxy) {
-        guard let targetId = chapterRows.first(where: { $0.chapterIndex == model.chapterIndex })?.id else { return }
+        guard let targetId = chapterRows.first(where: isCurrentRow)?.id
+            ?? chapterRows.first(where: { $0.chapterIndex == model.chapterIndex })?.id else { return }
         DispatchQueue.main.async {
             withAnimation(.easeOut(duration: 0.2)) {
                 proxy.scrollTo(targetId, anchor: .center)
