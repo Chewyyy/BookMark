@@ -86,14 +86,11 @@ struct ReaderView: View {
     private var minutesLeftInChapter: Int? {
         guard let book,
               let counts = book.wordCountsPerSpine,
-              let idx = model.readiumResourceIndex,
+              let idx = model.activeReadiumResourceIndex,
               counts.indices.contains(idx),
-              let pos = model.readiumChapterPosition,
-              let total = model.readiumChapterPositionTotal,
-              total > 0,
+              let progression = model.activeChapterProgression,
               let wpm = estimatedWPM
         else { return nil }
-        let progression = Double(pos) / Double(total)
         return ReadingSpeedEstimator.minutesRemainingInChapter(
             wordsInChapter: counts[idx],
             progressionInChapter: progression,
@@ -132,7 +129,7 @@ struct ReaderView: View {
 
     private func currentChapterWordsPerPageEstimate() -> Int? {
         guard let counts = book?.wordCountsPerSpine else { return nil }
-        let index = model.readiumResourceIndex ?? model.chapterIndex
+        let index = model.activeReadiumResourceIndex ?? model.chapterIndex
         guard counts.indices.contains(index), counts[index] > 0,
               let settings = model.paginatedSettings,
               settings.pagesPerChapter.indices.contains(index)
@@ -364,6 +361,12 @@ struct ReaderView: View {
                 onBuildExactPagination: startExactPaginationBuild,
                 onBuildHiddenExactPagination: { startHiddenExactPaginationBuild() },
                 onAutoWordsPerPageDebug: writeAutoWordsPerPageDebugLog,
+                onStartChromeTrace: { model.startChromeTrace() },
+                onLoadChromeTrace: {
+                    model.stopChromeTrace()
+                    pageAuditLog = (["BookMark Chrome Trace"] + pageAuditMetadataLines + ["", model.chromeTraceText()])
+                        .joined(separator: "\n")
+                },
                 onStop: stopPageAudit,
                 onClear: { pageAuditLog = "" }
             )
@@ -1568,6 +1571,8 @@ private struct ReaderPageAuditSheet: View {
     let onBuildExactPagination: () -> Void
     let onBuildHiddenExactPagination: () -> Void
     let onAutoWordsPerPageDebug: () -> Void
+    let onStartChromeTrace: () -> Void
+    let onLoadChromeTrace: () -> Void
     let onStop: () -> Void
     let onClear: () -> Void
 
@@ -1649,6 +1654,37 @@ private struct ReaderPageAuditSheet: View {
                         .frame(maxWidth: .infinity)
                 }
                 .disabled(isRunning || model.epubURL == nil)
+            }
+
+            // Live chrome trace — records the "pages left in part/chapter"
+            // line and the state feeding it on every page turn. Start it,
+            // close this sheet, reproduce the bug (e.g. Realistic mode into
+            // a Part's first chapter), reopen, then Load Trace + Share.
+            HStack(spacing: 8) {
+                if model.isChromeTracing {
+                    Button {
+                        onLoadChromeTrace()
+                    } label: {
+                        Label("Stop & Load Trace", systemImage: "record.circle.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .tint(.red)
+                } else {
+                    Button {
+                        onStartChromeTrace()
+                    } label: {
+                        Label("Start Chrome Trace", systemImage: "record.circle")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .disabled(isRunning || model.epubURL == nil)
+                }
+            }
+
+            if model.isChromeTracing {
+                Text("Tracing chrome… close this sheet, turn pages to reproduce, then reopen and tap Stop & Load Trace.")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(model.theme.secondaryForeground)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             HStack(spacing: 8) {
@@ -1766,6 +1802,138 @@ enum ReaderThemePalette {
     }
 }
 
+// MARK: - Reader chrome / TOC section logic
+//
+// Pure, dependency-free computation of the reader's "pages left in
+// part / chapter" chrome text and the underlying TOC section range.
+// Extracted from `ReaderModel` so the part-vs-chapter decision — the
+// source of the Realistic-mode flicker when crossing into a Part's
+// first chapter — can be unit-tested deterministically without a live
+// navigator. `ReaderModel` builds the `[TOCRow]` from its package and
+// delegates the decision here.
+enum ReaderChromeLogic {
+    struct TOCRow: Equatable {
+        let offset: Int
+        let title: String
+        let href: String
+        let chapterIndex: Int
+        let depth: Int
+    }
+
+    struct SectionRange: Equatable {
+        let kind: String
+        let startPage: Int
+        let endPage: Int
+    }
+
+    static func normalizedHref(_ href: String) -> String {
+        let decoded = href.removingPercentEncoding ?? href
+        return decoded
+            .replacingOccurrences(of: "\\", with: "/")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func sectionKind(for title: String) -> String {
+        let lower = title.lowercased()
+        if lower.contains("interlude") { return "interlude" }
+        if lower.hasPrefix("part ") { return "part" }
+        return "section"
+    }
+
+    /// A TOC row "starts a section" when it has children deeper than itself
+    /// before the next peer, or its title reads like a Part/Interlude divider.
+    static func rowIsSectionStart(_ row: TOCRow, rows: [TOCRow]) -> Bool {
+        let nextPeerOffset = rows.first { candidate in
+            candidate.offset > row.offset && candidate.depth <= row.depth
+        }?.offset ?? Int.max
+        if rows.contains(where: { $0.offset > row.offset && $0.offset < nextPeerOffset && $0.depth > row.depth }) {
+            return true
+        }
+        let lower = row.title.lowercased()
+        return lower.hasPrefix("part ") || lower == "interludes" || lower.hasPrefix("interlude")
+    }
+
+    static func sectionEndChapterIndex(for row: TOCRow, rows: [TOCRow], chapterCount: Int) -> Int {
+        let nextPeer = rows.first { candidate in
+            candidate.offset > row.offset && candidate.depth <= row.depth && candidate.chapterIndex > row.chapterIndex
+        }
+        let exclusiveEnd = nextPeer?.chapterIndex ?? chapterCount
+        return max(row.chapterIndex, min(chapterCount - 1, exclusiveEnd - 1))
+    }
+
+    static func currentLocatorTOCRow(in rows: [TOCRow], locatorHref: String?, locatorJSON: String?) -> TOCRow? {
+        let hrefText = locatorHref.map(normalizedHref) ?? ""
+        let locatorJSON = locatorJSON ?? ""
+        let matchingRows = rows.filter { row in
+            let candidate = normalizedHref(row.href)
+            return hrefText == candidate
+                || hrefText.hasPrefix("\(candidate)#")
+                || locatorJSON.contains(row.href)
+                || locatorJSON.contains(candidate)
+        }
+        return matchingRows.max { lhs, rhs in
+            if lhs.depth != rhs.depth { return lhs.depth < rhs.depth }
+            return normalizedHref(lhs.href).count < normalizedHref(rhs.href).count
+        }
+    }
+
+    /// Resolve the global page range of the Part/section the reader is
+    /// currently inside, or nil when the current resource is an ordinary
+    /// chapter (which is what makes the chrome fall back to "pages left in
+    /// chapter"). `currentResource` must be the resource the chrome should
+    /// reflect — passing a stale value here is what produces the flicker.
+    static func sectionRange(
+        rows: [TOCRow],
+        currentResource: Int,
+        chapterPageOffsets: [Int],
+        pagesPerChapter: [Int],
+        totalPages: Int,
+        locatorHref: String?,
+        locatorJSON: String?
+    ) -> SectionRange? {
+        guard pagesPerChapter.indices.contains(currentResource),
+              chapterPageOffsets.indices.contains(currentResource)
+        else { return nil }
+
+        let locatorRow = currentLocatorTOCRow(in: rows, locatorHref: locatorHref, locatorJSON: locatorJSON)
+        let candidateRow: TOCRow? = {
+            if let locatorRow,
+               rowIsSectionStart(locatorRow, rows: rows),
+               locatorRow.chapterIndex == currentResource {
+                return locatorRow
+            }
+            return rows.last { row in
+                row.chapterIndex == currentResource && rowIsSectionStart(row, rows: rows)
+            }
+        }()
+        guard let sectionRow = candidateRow else { return nil }
+
+        let endChapter = sectionEndChapterIndex(for: sectionRow, rows: rows, chapterCount: pagesPerChapter.count)
+        guard endChapter >= sectionRow.chapterIndex,
+              chapterPageOffsets.indices.contains(endChapter),
+              pagesPerChapter.indices.contains(endChapter)
+        else { return nil }
+
+        let startPage = chapterPageOffsets[sectionRow.chapterIndex] + 1
+        let endPage = chapterPageOffsets[endChapter] + max(1, pagesPerChapter[endChapter])
+        return SectionRange(
+            kind: sectionKind(for: sectionRow.title),
+            startPage: max(1, min(totalPages, startPage)),
+            endPage: max(1, min(totalPages, endPage))
+        )
+    }
+
+    static func sectionPagesLeftText(range: SectionRange?, currentPage: Int?) -> String? {
+        guard let section = range,
+              let currentPage,
+              section.endPage >= section.startPage
+        else { return nil }
+        let left = max(0, section.endPage - currentPage)
+        if left == 0 { return "End of \(section.kind)" }
+        return "\(left) page\(left == 1 ? "" : "s") left in \(section.kind)"
+    }
+}
+
 // MARK: - View model
 
 @MainActor
@@ -1781,6 +1949,8 @@ final class ReaderModel: ObservableObject {
     @Published var readiumPosition: Int?
     @Published var readiumTotalPositions: Int?
     @Published var readiumLocatorJSON: String?
+    @Published var readiumLocatorHref: String?
+    @Published var readiumResourceProgression: Double?
     @Published var readiumResourceIndex: Int?
     @Published var readiumResourceTotal: Int?
     @Published var readiumChapterPosition: Int?
@@ -1814,6 +1984,83 @@ final class ReaderModel: ObservableObject {
     @Published var pendingInitialPage: InitialPage?
     @Published var suppressFirstPageUntilLastJump = false
     @Published var webIsReady = false
+
+    // MARK: Chrome trace (Page Audit debug capture)
+    //
+    // A live recorder for the bottom/top chrome and the state that feeds it.
+    // Capturing at every model mutation (location, chapter page state, turn
+    // intent) reproduces the exact sequence SwiftUI renders, so the
+    // part-vs-chapter flicker in Realistic mode shows up as consecutive lines
+    // with differing `chapterText`. Off by default; near-zero cost when off.
+    @Published var isChromeTracing = false
+    @Published private(set) var chromeTrace: [String] = []
+    private var chromeTraceStartedAt: Date?
+    private var lastChromeTracePayload: String?
+    private let chromeTraceMaxLines = 4000
+
+    static let chromeTraceHeader = [
+        "ms", "event", "anim", "countMode", "chapterText", "statusBottom",
+        "sectionRange", "activeRes", "locRes", "cvPage", "cvTotal",
+        "globalPage", "rawGlobal", "pgOverride", "pendDir", "locHref"
+    ].joined(separator: "\t")
+
+    func startChromeTrace() {
+        chromeTrace = []
+        lastChromeTracePayload = nil
+        chromeTraceStartedAt = Date()
+        isChromeTracing = true
+        recordChromeTrace(event: "start", force: true)
+    }
+
+    func stopChromeTrace() {
+        guard isChromeTracing else { return }
+        recordChromeTrace(event: "stop", force: true)
+        isChromeTracing = false
+    }
+
+    func chromeTraceText() -> String {
+        ([ReaderModel.chromeTraceHeader] + chromeTrace).joined(separator: "\n")
+    }
+
+    /// Append one snapshot line. Identical consecutive payloads are collapsed
+    /// (unless `force`) so the log highlights genuine transitions rather than
+    /// repeated re-renders of the same state.
+    func recordChromeTrace(event: String, force: Bool = false) {
+        guard isChromeTracing else { return }
+        let payload = chromeTracePayload()
+        if !force, payload == lastChromeTracePayload { return }
+        lastChromeTracePayload = payload
+        let ms = chromeTraceStartedAt.map { Int(Date().timeIntervalSince($0) * 1000) } ?? 0
+        chromeTrace.append("\(ms)\t\(event)\t\(payload)")
+        if chromeTrace.count > chromeTraceMaxLines {
+            chromeTrace.removeFirst(chromeTrace.count - chromeTraceMaxLines)
+        }
+    }
+
+    private func chromeTracePayload() -> String {
+        let sectionText: String = currentTOCSectionRange.map { "\($0.kind):\($0.startPage)-\($0.endPage)" } ?? "nil"
+        let hrefTail: String = {
+            guard let href = readiumLocatorHref else { return "" }
+            return String(href.suffix(34))
+        }()
+        let fields: [String] = [
+            settings.pageAnim.rawValue,
+            settings.pageCountMode.rawValue,
+            chapterPagesLeftText,
+            statusBottom,
+            sectionText,
+            activeReadiumResourceIndex.map(String.init) ?? "",
+            readiumResourceIndex.map(String.init) ?? "",
+            readiumChapterPageState.map { String($0.currentPage) } ?? "",
+            readiumChapterPageState.map { String($0.totalPages) } ?? "",
+            paginatedBookCurrentPage.map(String.init) ?? "",
+            rawPaginatedBookCurrentPage.map(String.init) ?? "",
+            paginatedPageOverride.map(String.init) ?? "nil",
+            pendingReadiumPageTurnDirection.map(String.init) ?? "nil",
+            hrefTail
+        ]
+        return fields.joined(separator: "\t")
+    }
 
     enum InitialPage: Equatable {
         case first, last, page(Int)
@@ -1863,7 +2110,6 @@ final class ReaderModel: ObservableObject {
 
     var statusBottom: String {
         if epubURL != nil {
-            guard readiumDisplayIsReady else { return "Calculating..." }
             let percent = Int((overallProgress * 100).rounded())
             if let label = readiumPublisherPageLabel, let total = readiumPublisherPageTotal, total > 0 {
                 return "Page \(label) of \(total) · \(percent)%"
@@ -1898,7 +2144,6 @@ final class ReaderModel: ObservableObject {
 
     var pageOnlyText: String {
         if epubURL != nil {
-            guard readiumDisplayIsReady else { return "Calculating..." }
             if let label = readiumPublisherPageLabel {
                 return "Page \(label)"
             }
@@ -1939,6 +2184,40 @@ final class ReaderModel: ObservableObject {
         max(1, readiumTotalPositions ?? estimatedBookPages)
     }
 
+    var activeReadiumResourceIndex: Int? {
+        guard let state = readiumChapterPageState else {
+            return readiumResourceIndex
+        }
+        guard let locationIndex = readiumResourceIndex else {
+            return state.resourceIndex
+        }
+        if locationIndex == state.resourceIndex {
+            return locationIndex
+        }
+        if state.currentPage <= 1, locationIndex < state.resourceIndex {
+            return state.resourceIndex
+        }
+        return locationIndex
+    }
+
+    var activeChapterProgression: Double? {
+        if activeReadiumResourceIndex == readiumResourceIndex,
+           let progression = readiumResourceProgression {
+            return max(0, min(1, progression))
+        }
+        if let state = readiumChapterPageState,
+           activeReadiumResourceIndex == state.resourceIndex,
+           state.totalPages > 0 {
+            let pageOffset = max(0, state.currentPage - 1)
+            return max(0, min(1, Double(pageOffset) / Double(state.totalPages)))
+        }
+        guard let pos = readiumChapterPosition,
+              let total = readiumChapterPositionTotal,
+              total > 0
+        else { return nil }
+        return max(0, min(1, Double(pos) / Double(total)))
+    }
+
     /// Read by session tracking (`saveSession`), bookmarks, and anything else
     /// that needs a stable swipe-driven counter. The visible status bar uses
     /// `rawDisplayPage` directly so the override doesn't smooth out Readium's
@@ -1957,7 +2236,9 @@ final class ReaderModel: ObservableObject {
             if let sectionText = sectionPagesLeftText {
                 return sectionText
             }
-            if let pageState = readiumChapterPageState, pageState.totalPages > 0 {
+            if let pageState = readiumChapterPageState,
+               pageState.resourceIndex == activeReadiumResourceIndex,
+               pageState.totalPages > 0 {
                 let left = max(0, pageState.totalPages - pageState.currentPage)
                 if left == 0 { return "End of chapter" }
                 return "\(left) page\(left == 1 ? "" : "s") left in chapter"
@@ -1975,13 +2256,10 @@ final class ReaderModel: ObservableObject {
     }
 
     private var sectionPagesLeftText: String? {
-        guard let section = currentTOCSectionRange,
-              let currentPage = paginatedBookCurrentPage,
-              section.endPage >= section.startPage
-        else { return nil }
-        let left = max(0, section.endPage - currentPage)
-        if left == 0 { return "End of \(section.kind)" }
-        return "\(left) page\(left == 1 ? "" : "s") left in \(section.kind)"
+        ReaderChromeLogic.sectionPagesLeftText(
+            range: currentTOCSectionRange,
+            currentPage: paginatedBookCurrentPage
+        )
     }
 
     private var estimatedChapterPageCounts: [Int] {
@@ -1999,10 +2277,12 @@ final class ReaderModel: ObservableObject {
         if direction == 0 {
             pendingReadiumPageTurnDirection = nil
             pendingPaginatedPageTurnBase = nil
+            recordChromeTrace(event: "turnIntent:0", force: true)
             return
         }
         pendingReadiumPageTurnDirection = direction > 0 ? 1 : -1
         pendingPaginatedPageTurnBase = paginatedBookCurrentPage
+        recordChromeTrace(event: "turnIntent:\(direction > 0 ? 1 : -1)", force: true)
     }
 
     func resetReadiumSessionMetrics() {
@@ -2016,6 +2296,8 @@ final class ReaderModel: ObservableObject {
         readiumPosition = nil
         readiumTotalPositions = nil
         readiumLocatorJSON = nil
+        readiumLocatorHref = nil
+        readiumResourceProgression = nil
         readiumResourceIndex = nil
         readiumResourceTotal = nil
         readiumChapterPosition = nil
@@ -2048,9 +2330,11 @@ final class ReaderModel: ObservableObject {
         if paginatedPageOverride == nil {
             paginatedPageOverride = rawPaginatedBookCurrentPage
         }
+        recordChromeTrace(event: "chapterState")
     }
 
     func updateReadiumLocation(_ location: ReadiumLocation) {
+        defer { recordChromeTrace(event: "location") }
         let oldProgress = readiumProgress
         let oldPage = displayPageOverride ?? rawDisplayPage
         let oldPaginatedPage = pendingPaginatedPageTurnBase ?? paginatedBookCurrentPage
@@ -2060,6 +2344,8 @@ final class ReaderModel: ObservableObject {
 
         readiumProgress = max(0, min(1, location.totalProgress))
         readiumLocatorJSON = location.locatorJSON
+        readiumLocatorHref = location.locatorHref
+        readiumResourceProgression = location.resourceProgression
         readiumPosition = location.bookPosition
         readiumTotalPositions = location.bookPositionTotal
         readiumResourceIndex = location.resourceIndex
@@ -2070,7 +2356,15 @@ final class ReaderModel: ObservableObject {
         readiumPublisherPage = location.publisherPage
         readiumPublisherPageLabel = location.publisherPageLabel
         readiumPublisherPageTotal = location.publisherPageTotal
-        if let idx = location.resourceIndex {
+        if let state = location.chapterPageState {
+            readiumChapterPageState = state
+            readiumDisplayIsReady = true
+            chapterIndex = state.resourceIndex
+            refreshPaginatedSettingsIfNeeded(from: state)
+            if paginatedPageOverride == nil {
+                paginatedPageOverride = rawPaginatedBookCurrentPage
+            }
+        } else if let idx = location.resourceIndex {
             chapterIndex = idx
             if readiumChapterPageState?.resourceIndex != idx {
                 readiumChapterPageState = nil
@@ -2148,16 +2442,12 @@ final class ReaderModel: ObservableObject {
     /// stays the same on iPhone, iPad, and at any font size.
     var currentWordOffset: Int? {
         guard let counts = wordCountsPerSpine,
-              let idx = readiumResourceIndex,
+              let idx = activeReadiumResourceIndex,
               counts.indices.contains(idx)
         else { return nil }
         let before = counts.prefix(idx).reduce(0, +)
         let inChapter: Int = {
-            guard let pos = readiumChapterPosition,
-                  let total = readiumChapterPositionTotal,
-                  total > 0
-            else { return 0 }
-            let progression = max(0.0, min(1.0, Double(pos) / Double(total)))
+            guard let progression = activeChapterProgression else { return 0 }
             return Int((Double(counts[idx]) * progression).rounded())
         }()
         return before + inChapter
@@ -2177,7 +2467,7 @@ final class ReaderModel: ObservableObject {
     /// or the book hasn't been word-counted.
     var wordsPerViewportPage: Double? {
         guard let counts = wordCountsPerSpine,
-              let idx = readiumResourceIndex,
+              let idx = activeReadiumResourceIndex,
               counts.indices.contains(idx),
               let state = readiumChapterPageState,
               state.totalPages > 0
@@ -2341,86 +2631,60 @@ final class ReaderModel: ObservableObject {
         return max(1, min(settings.totalPages, page))
     }
 
-    private struct TOCSectionRange {
-        let kind: String
-        let startPage: Int
-        let endPage: Int
-    }
-
-    private var currentTOCSectionRange: TOCSectionRange? {
+    private var currentTOCSectionRange: ReaderChromeLogic.SectionRange? {
         guard let package,
-              let currentResource = readiumResourceIndex,
+              let currentResource = activeReadiumResourceIndex,
               let settings = paginatedSettings,
               paginatedSettingsKey == paginationKey,
               settings.pagesPerChapter.indices.contains(currentResource),
               settings.chapterPageOffsets.indices.contains(currentResource)
         else { return nil }
 
-        let rows = package.toc.enumerated().compactMap { offset, entry -> (offset: Int, title: String, chapterIndex: Int, depth: Int)? in
-            guard let chapterIndex = spineIndex(for: entry.href, in: package) else { return nil }
+        let rows = package.toc.enumerated().compactMap { offset, entry -> ReaderChromeLogic.TOCRow? in
+            let chapterIndex = spineIndex(for: entry.href, in: package) ?? firstDescendantSpineIndex(after: offset, in: package)
+            guard let chapterIndex else { return nil }
             let title = entry.label.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !title.isEmpty else { return nil }
-            return (offset, title, chapterIndex, max(0, entry.depth))
+            return ReaderChromeLogic.TOCRow(
+                offset: offset,
+                title: title,
+                href: entry.href,
+                chapterIndex: chapterIndex,
+                depth: max(0, entry.depth)
+            )
         }
 
-        guard let sectionRow = rows.first(where: { row in
-            row.chapterIndex == currentResource && rowIsSectionStart(row, rows: rows)
-        }) else { return nil }
-
-        let endChapter = sectionEndChapterIndex(for: sectionRow, rows: rows, chapterCount: settings.pagesPerChapter.count)
-        guard endChapter >= sectionRow.chapterIndex,
-              settings.chapterPageOffsets.indices.contains(endChapter),
-              settings.pagesPerChapter.indices.contains(endChapter)
-        else { return nil }
-
-        let startPage = settings.chapterPageOffsets[sectionRow.chapterIndex] + 1
-        let endPage = settings.chapterPageOffsets[endChapter] + max(1, settings.pagesPerChapter[endChapter])
-        return TOCSectionRange(
-            kind: sectionKind(for: sectionRow.title),
-            startPage: max(1, min(settings.totalPages, startPage)),
-            endPage: max(1, min(settings.totalPages, endPage))
+        return ReaderChromeLogic.sectionRange(
+            rows: rows,
+            currentResource: currentResource,
+            chapterPageOffsets: settings.chapterPageOffsets,
+            pagesPerChapter: settings.pagesPerChapter,
+            totalPages: settings.totalPages,
+            locatorHref: readiumLocatorHref,
+            locatorJSON: readiumLocatorJSON
         )
     }
 
-    private func rowIsSectionStart(_ row: (offset: Int, title: String, chapterIndex: Int, depth: Int), rows: [(offset: Int, title: String, chapterIndex: Int, depth: Int)]) -> Bool {
-        let nextPeerOffset = rows.first { candidate in
-            candidate.offset > row.offset && candidate.depth <= row.depth
-        }?.offset ?? Int.max
-        if rows.contains(where: { $0.offset > row.offset && $0.offset < nextPeerOffset && $0.depth > row.depth }) {
-            return true
+    private func firstDescendantSpineIndex(after offset: Int, in package: EPUBPackage) -> Int? {
+        guard package.toc.indices.contains(offset) else { return nil }
+        let parentDepth = package.toc[offset].depth
+        for candidate in package.toc.dropFirst(offset + 1) {
+            if candidate.depth <= parentDepth {
+                return nil
+            }
+            if let index = spineIndex(for: candidate.href, in: package) {
+                return index
+            }
         }
-        let lower = row.title.lowercased()
-        return lower.hasPrefix("part ") || lower == "interludes" || lower.hasPrefix("interlude")
-    }
-
-    private func sectionEndChapterIndex(for row: (offset: Int, title: String, chapterIndex: Int, depth: Int), rows: [(offset: Int, title: String, chapterIndex: Int, depth: Int)], chapterCount: Int) -> Int {
-        let nextPeer = rows.first { candidate in
-            candidate.offset > row.offset && candidate.depth <= row.depth && candidate.chapterIndex > row.chapterIndex
-        }
-        let exclusiveEnd = nextPeer?.chapterIndex ?? chapterCount
-        return max(row.chapterIndex, min(chapterCount - 1, exclusiveEnd - 1))
-    }
-
-    private func sectionKind(for title: String) -> String {
-        let lower = title.lowercased()
-        if lower.contains("interlude") { return "interlude" }
-        if lower.hasPrefix("part ") { return "part" }
-        return "section"
+        return nil
     }
 
     private func spineIndex(for href: String, in package: EPUBPackage) -> Int? {
-        let target = normalizedHref(href)
+        let target = ReaderChromeLogic.normalizedHref(href)
         return package.spine.firstIndex { entry in
-            let spineHref = normalizedHref(entry.href)
+            let spineHref = ReaderChromeLogic.normalizedHref(entry.href)
             return target == spineHref || target.hasPrefix("\(spineHref)#")
         }
-    }
-
-    private func normalizedHref(_ href: String) -> String {
-        let decoded = href.removingPercentEncoding ?? href
-        return decoded
-            .replacingOccurrences(of: "\\", with: "/")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func boundedPaginatedBookPage(_ page: Int) -> Int {

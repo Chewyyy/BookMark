@@ -64,7 +64,7 @@ struct JournalView: View {
                         onEditDate: { finishTarget = $0 }
                     )
                     .padding(.horizontal, 16)
-                    .padding(.bottom, 24)
+                    .padding(.bottom, 96)
                 }
                 .readableContentWidth(hSizeClass == .regular ? 720 : .infinity)
             }

@@ -8,6 +8,8 @@ import UIKit
 struct ReadiumLocation {
     var totalProgress: Double            // 0...1 across the whole book
     var locatorJSON: String?
+    var locatorHref: String?
+    var resourceProgression: Double?
     var bookPosition: Int?               // absolute position across the whole book
     var bookPositionTotal: Int?          // total positions
     var resourceIndex: Int?              // 0-based index into reading order (chapter)
@@ -18,6 +20,7 @@ struct ReadiumLocation {
     var publisherPage: Int?
     var publisherPageLabel: String?
     var publisherPageTotal: Int?
+    var chapterPageState: ReadiumChapterPageState?
 }
 
 struct ReadiumPublisherPage: Equatable {
@@ -112,6 +115,7 @@ struct ReadiumReaderContainer: View {
                     publisherPages: loader.publisherPages,
                     onLocationChange: { location in
                         guard !bridge.isSuppressingTestCurlLocationUpdates else { return }
+                        guard !bridge.shouldSuppressTestCurlPreloadEcho(location) else { return }
                         bridge.latestLocation = location
                         onLocationChange(location)
                         // A resync replays the live location; scheduling another
@@ -409,6 +413,8 @@ final class ReadiumNavigatorBridge: ObservableObject {
     /// resync. Invoked when the Test Curl preload suppression window closes so the
     /// page counter and chrome are forced back in sync with the page on screen.
     var requestReaderStateResync: (() -> Void)?
+    private var suppressedTestCurlPreloadEchoKeys: Set<String> = []
+    private var suppressedTestCurlPreloadEchoExpiry: CFTimeInterval = 0
 
     var isAnimatingPageTurn: Bool { animator?.isAnimating ?? false }
 
@@ -461,7 +467,37 @@ final class ReadiumNavigatorBridge: ObservableObject {
     }
 
     func refreshTestCurlIfNeeded() {
-        animator?.refreshTestCurlIfReady()
+        animator?.refreshTestCurlForLocationChange()
+    }
+
+    func updateSuppressedTestCurlPreloadEchoKeys(_ keys: Set<String>) {
+        suppressedTestCurlPreloadEchoKeys = keys
+        suppressedTestCurlPreloadEchoExpiry = keys.isEmpty ? 0 : CACurrentMediaTime() + 4.0
+    }
+
+    func shouldSuppressTestCurlPreloadEcho(_ location: ReadiumLocation) -> Bool {
+        guard !suppressedTestCurlPreloadEchoKeys.isEmpty else { return false }
+        guard CACurrentMediaTime() <= suppressedTestCurlPreloadEchoExpiry else {
+            suppressedTestCurlPreloadEchoKeys = []
+            suppressedTestCurlPreloadEchoExpiry = 0
+            return false
+        }
+        guard let key = locatorKey(for: location),
+              suppressedTestCurlPreloadEchoKeys.contains(key) else {
+            return false
+        }
+        return true
+    }
+
+    private func locatorKey(for location: ReadiumLocation) -> String? {
+        guard let href = location.locatorHref else { return nil }
+        if let position = location.bookPosition {
+            return "\(href)#p\(position)"
+        }
+        if let progression = location.resourceProgression {
+            return "\(href)#r\(Int((progression * 1000).rounded()))"
+        }
+        return href
     }
 }
 
@@ -665,8 +701,14 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
                     bridge?.requestReaderStateResync?()
                 }
             }
+            host.pageTurnAnimator.onTestCurlTurnSettled = { [weak bridge] in
+                bridge?.requestReaderStateResync?()
+            }
             host.pageTurnAnimator.onTestCurlReadyChange = { [weak bridge] ready in
                 bridge?.isTestCurlOverlayReady = ready
+            }
+            host.pageTurnAnimator.onTestCurlPreloadEchoKeysChange = { [weak bridge] keys in
+                bridge?.updateSuppressedTestCurlPreloadEchoKeys(keys)
             }
             bridge.requestReaderStateResync = { [weak bridge, weak coordinator = context.coordinator] in
                 bridge?.isResyncingReaderState = true
@@ -714,8 +756,14 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
                 bridge?.requestReaderStateResync?()
             }
         }
+        host.pageTurnAnimator.onTestCurlTurnSettled = { [weak bridge] in
+            bridge?.requestReaderStateResync?()
+        }
         host.pageTurnAnimator.onTestCurlReadyChange = { [weak bridge] ready in
             bridge?.isTestCurlOverlayReady = ready
+        }
+        host.pageTurnAnimator.onTestCurlPreloadEchoKeysChange = { [weak bridge] keys in
+            bridge?.updateSuppressedTestCurlPreloadEchoKeys(keys)
         }
         bridge.requestReaderStateResync = { [weak bridge, weak coordinator = context.coordinator] in
             bridge?.isResyncingReaderState = true
@@ -865,7 +913,9 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
 
         private func emitLocation(_ locator: Locator) {
             let progress = locator.locations.totalProgression ?? locator.locations.progression ?? 0
+            let resourceProgression = locator.locations.progression
             let json = try? locator.jsonString()
+            let href = String(describing: locator.href)
             let bookPosition = locator.locations.position
             let bookTotal = positionsByResource.isEmpty ? nil : positionsByResource.reduce(0) { $0 + $1.count }
 
@@ -894,9 +944,13 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
             }()
 
             let publisherPage = publisherPage(for: progress)
+            let chapterPageState = navigator.flatMap { chapterPageState(from: $0.viewport) }
+            lastChapterPageState = chapterPageState
             onLocationChange(ReadiumLocation(
                 totalProgress: progress,
                 locatorJSON: json,
+                locatorHref: href,
+                resourceProgression: resourceProgression,
                 bookPosition: bookPosition,
                 bookPositionTotal: bookTotal,
                 resourceIndex: resourceIndex,
@@ -906,12 +960,9 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
                 chapterTitle: title,
                 publisherPage: publisherPage?.number,
                 publisherPageLabel: publisherPage?.label,
-                publisherPageTotal: publisherPages.isEmpty ? nil : publisherPages.count
+                publisherPageTotal: publisherPages.isEmpty ? nil : publisherPages.count,
+                chapterPageState: chapterPageState
             ))
-
-            if let navigator {
-                publishChapterPageState(from: navigator.viewport)
-            }
         }
 
         func navigator(_ navigator: any ViewportObservingNavigator, viewportDidChange viewport: NavigatorViewport?) {

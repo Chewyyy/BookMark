@@ -126,6 +126,7 @@ struct BarChart7Day: View {
     let goalSeconds: Int
     let yAxisLabel: String
     let xAxisLabel: String
+    var plotHeight: CGFloat = AxisLayout.plotHeight
 
     private var maxVal: Int {
         max(goalSeconds, values.max() ?? 0, 1)
@@ -150,7 +151,7 @@ struct BarChart7Day: View {
             HStack(alignment: .top, spacing: AxisLayout.columnSpacing) {
                 if !yAxisLabel.isEmpty {
                     VerticalAxisLabel(text: yAxisLabel)
-                        .frame(width: AxisLayout.yLabelWidth, height: AxisLayout.plotHeight, alignment: .center)
+                        .frame(width: AxisLayout.yLabelWidth, height: plotHeight, alignment: .center)
                 }
 
                 VStack(alignment: .trailing) {
@@ -193,7 +194,7 @@ struct BarChart7Day: View {
                     }
                 }
             }
-            .frame(height: AxisLayout.plotHeight)
+            .frame(height: plotHeight)
             HStack(spacing: AxisLayout.columnSpacing) {
                 Color.clear.frame(width: leadingInset - AxisLayout.columnSpacing)
                 HStack(spacing: 6) {
@@ -223,6 +224,7 @@ struct PaceLine7Day: View {
     let values: [Double]
     let yAxisLabel: String
     let xAxisLabel: String
+    var plotHeight: CGFloat = AxisLayout.plotHeight
 
     private var maxVal: Double {
         max(0.5, values.max() ?? 0.5)
@@ -258,7 +260,7 @@ struct PaceLine7Day: View {
                 HStack(alignment: .top, spacing: AxisLayout.columnSpacing) {
                     if !yAxisLabel.isEmpty {
                         VerticalAxisLabel(text: yAxisLabel)
-                            .frame(width: AxisLayout.yLabelWidth, height: AxisLayout.plotHeight, alignment: .center)
+                            .frame(width: AxisLayout.yLabelWidth, height: plotHeight, alignment: .center)
                     }
 
                     VStack(alignment: .trailing) {
@@ -313,7 +315,7 @@ struct PaceLine7Day: View {
                         }
                     }
                 }
-                .frame(height: AxisLayout.plotHeight)
+                .frame(height: plotHeight)
                 HStack(spacing: AxisLayout.columnSpacing) {
                     Color.clear.frame(width: leadingInset - AxisLayout.columnSpacing)
                     HStack(spacing: 6) {

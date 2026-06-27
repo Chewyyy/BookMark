@@ -1,4 +1,5 @@
 import UIKit
+import OSLog
 import ReadiumNavigator
 import ReadiumShared
 
@@ -18,6 +19,8 @@ import ReadiumShared
 //      under cover and reveal the original live page.
 @MainActor
 final class PageTurnAnimator {
+    private static let testCurlLogger = Logger(subsystem: "BookMark", category: "TestCurl")
+
     weak var hostView: UIView?
     weak var hostController: UIViewController?
     weak var navigatorController: EPUBNavigatorViewController?
@@ -29,11 +32,20 @@ final class PageTurnAnimator {
     var onTestCurlPageTurn: ((Int) -> Void)?
     var onTestCurlCenterTap: (() -> Void)?
     var onTestCurlPreloadStateChange: ((Bool) -> Void)?
+    /// Fires once a Test Curl turn's real navigation has settled, BEFORE the
+    /// adjacent-page preload window opens. Lets the host replay the genuine
+    /// destination location so the chrome updates immediately instead of
+    /// waiting out the preload round-trips (and any retries).
+    var onTestCurlTurnSettled: (() -> Void)?
     /// Fires true once the interactive overlay controller exists (so taps and
     /// turns are handled by Test Curl), false when it's torn down. Lets the host
     /// keep a fallback tap layer live during the cold-open preload (~first
     /// render), so the reader isn't unresponsive for a few seconds.
     var onTestCurlReadyChange: ((Bool) -> Void)?
+    /// Reports locators visited only to capture adjacent Test Curl snapshots.
+    /// Readium can deliver those location callbacks after the preload suppression
+    /// window closes, so the bridge drops matching late echoes briefly.
+    var onTestCurlPreloadEchoKeysChange: ((Set<String>) -> Void)?
 
     private(set) var isAnimating: Bool = false
     private var isTestCurlEnabled = false
@@ -43,6 +55,11 @@ final class PageTurnAnimator {
     private var isTestCurlPrepScheduled = false
     private var activeLoadingRetryCount = 0
     private weak var testCurlController: TestCurlPageViewController?
+    /// Locator key (href + book position) the overlay was last prepared for.
+    /// Used only by the location-change refresh path to skip re-preparing for
+    /// the page we're already showing — the guard that breaks the idle
+    /// preload-echo loop. Nil when no overlay is prepared.
+    private var lastPreparedLocatorKey: String?
 
     // Wait long enough after navigation for WKWebView to paint the new page.
     private static let renderSettleNanoseconds: UInt64 = 90_000_000
@@ -132,6 +149,24 @@ final class PageTurnAnimator {
         }
     }
 
+    /// Refresh triggered by a navigator location change. A completed Test Curl
+    /// preload navigates the navigator forward/back and its async
+    /// `locationDidChange` can land AFTER the suppression window closes, firing
+    /// this. But by then the navigator has already restored to the page we just
+    /// prepared the overlay for, so we skip — otherwise we'd preload again,
+    /// leak again, and loop forever, flashing the adjacent page while the reader
+    /// sits still (worst at a chapter boundary, where the forward preload
+    /// reloads a whole new resource and its echo is slow). A genuine user move
+    /// lands on a new page, so the key differs and we re-prepare normally.
+    /// User-turn re-preparation does NOT come through here — it calls
+    /// `prepareTestCurlOverlay()` directly — so it is unaffected by this guard.
+    func refreshTestCurlForLocationChange() {
+        if let key = currentLocatorKey(), key == lastPreparedLocatorKey {
+            return
+        }
+        refreshTestCurlIfReady()
+    }
+
     func refreshTestCurlIfReady() {
         guard isTestCurlEnabled, !isPreparingTestCurl, !isTestCurlPrepScheduled else { return }
         guard canPrepareTestCurl?() ?? true else { return }
@@ -177,6 +212,8 @@ final class PageTurnAnimator {
         controller.removeFromParent()
         testCurlController = nil
         isPreparingTestCurl = false
+        lastPreparedLocatorKey = nil
+        onTestCurlPreloadEchoKeysChange?([])
         resetTestCurlRetryState()
         onTestCurlReadyChange?(false)
     }
@@ -185,7 +222,10 @@ final class PageTurnAnimator {
         guard isTestCurlEnabled, !isPreparingTestCurl else { return }
         guard let hostView, let hostController, let nav = navigatorController else { return }
         isPreparingTestCurl = true
-        defer { isPreparingTestCurl = false }
+        defer {
+            isPreparingTestCurl = false
+            if isTestCurlEnabled, testCurlController != nil { onTestCurlReadyChange?(true) }
+        }
 
         guard !containsActiveActivityIndicator(in: nav.view) else {
             if activeLoadingRetryCount == 0 {
@@ -220,8 +260,12 @@ final class PageTurnAnimator {
 
         onTestCurlPreloadStateChange?(true)
         defer { onTestCurlPreloadStateChange?(false) }
-        let nextImage = await preloadAdjacentSnapshot(direction: 1, navigator: nav)
-        let previousImage = await preloadAdjacentSnapshot(direction: -1, navigator: nav)
+        let originLocator = nav.currentLocation
+        let nextSnapshot = await preloadAdjacentSnapshot(direction: 1, navigator: nav)
+        let previousSnapshot = await preloadAdjacentSnapshot(direction: -1, navigator: nav)
+        onTestCurlPreloadEchoKeysChange?(Set([nextSnapshot?.locatorKey, previousSnapshot?.locatorKey].compactMap { $0 }))
+        let nextImage = nextSnapshot?.image
+        let previousImage = previousSnapshot?.image
         logTestCurl("prepareOverlay previousAvailable=\(previousImage != nil) nextAvailable=\(nextImage != nil) locatorAfterPreload=\(latestLocationDescription())")
 
         if let controller = testCurlController {
@@ -247,10 +291,19 @@ final class PageTurnAnimator {
             controller.didMove(toParent: hostController)
             testCurlController = controller
         }
-        onTestCurlReadyChange?(true)
+        // Record the page this overlay represents. Set before the deferred
+        // suppression close (and resync) below run, so any late preload echo
+        // that arrives once the window reopens is correctly recognized as the
+        // page we're already on and skipped by refreshTestCurlForLocationChange.
+        lastPreparedLocatorKey = locatorKey(for: originLocator) ?? currentLocatorKey()
     }
 
-    private func preloadAdjacentSnapshot(direction: Int, navigator nav: EPUBNavigatorViewController) async -> UIImage? {
+    private struct PreloadedSnapshot {
+        let image: UIImage
+        let locatorKey: String?
+    }
+
+    private func preloadAdjacentSnapshot(direction: Int, navigator nav: EPUBNavigatorViewController) async -> PreloadedSnapshot? {
         let moved: Bool
         if direction > 0 {
             moved = await nav.goForward(options: NavigatorGoOptions(animated: false))
@@ -263,6 +316,7 @@ final class PageTurnAnimator {
         }
 
         try? await Task.sleep(nanoseconds: Self.renderSettleNanoseconds)
+        let preloadKey = currentLocatorKey()
         let image = captureImage(of: nav.view)
         if direction > 0 {
             _ = await nav.goBackward(options: NavigatorGoOptions(animated: false))
@@ -271,7 +325,8 @@ final class PageTurnAnimator {
         }
         try? await Task.sleep(nanoseconds: Self.renderSettleNanoseconds)
         logTestCurl("preload direction=\(direction) available=\(image != nil)")
-        return image
+        guard let image else { return nil }
+        return PreloadedSnapshot(image: image, locatorKey: preloadKey)
     }
 
     private func handleTestCurlTransition(direction: Int, completed: Bool) {
@@ -285,6 +340,7 @@ final class PageTurnAnimator {
         turnState = .completingTurn
         testCurlPageLabels = testCurlPageLabels?.advanced(by: direction)
         logTestCurl("transitionCompleted=true requestedDirection=\(direction) locatorBeforeSync=\(latestLocationDescription())")
+        onTestCurlPreloadEchoKeysChange?([])
         onTestCurlPageTurn?(direction)
 
         Task { @MainActor [weak self, weak nav] in
@@ -302,6 +358,13 @@ final class PageTurnAnimator {
             try? await Task.sleep(nanoseconds: Self.renderSettleNanoseconds)
             self.isAnimating = false
             self.turnState = .idle
+            // Land the destination chrome NOW, before the preload window opens.
+            // Otherwise the genuine destination location can be dropped inside
+            // prepareTestCurlOverlay's suppression window and not recover until
+            // its two preload round-trips (plus any loading-indicator retries)
+            // finish — leaving the chrome stuck on the pre-turn page (e.g. a
+            // Part's "X pages left in part"). The replay is idempotent.
+            self.onTestCurlTurnSettled?()
             await self.prepareTestCurlOverlay()
         }
     }
@@ -382,9 +445,11 @@ final class PageTurnAnimator {
 
     private func performUIKitTestCurlTurn(direction: Int) async -> Bool {
         guard isTestCurlEnabled else { return false }
+        guard !isPreparingTestCurl else { return false }
         if testCurlController == nil {
             await prepareTestCurlOverlay()
         }
+        guard !isPreparingTestCurl else { return false }
         guard let testCurlController else { return false }
         logTestCurl("programmaticTurn requestedDirection=\(direction) locator=\(latestLocationDescription())")
         testCurlController.startProgrammaticTurn(direction: direction)
@@ -395,8 +460,31 @@ final class PageTurnAnimator {
         latestLocationProvider?() ?? "unavailable"
     }
 
+    /// A page-stable key for the navigator's current location. Built from the
+    /// resource href plus the book `position` (a per-page integer), so it is
+    /// identical across calls for the same page and survives a preload's
+    /// restore round-trip — the property that makes the loop guard reliable.
+    private func currentLocatorKey() -> String? {
+        locatorKey(for: navigatorController?.currentLocation)
+    }
+
+    private func locatorKey(for locator: Locator?) -> String? {
+        guard let locator else { return nil }
+        let href = String(describing: locator.href)
+        if let position = locator.locations.position {
+            return "\(href)#p\(position)"
+        }
+        if let progression = locator.locations.progression {
+            return "\(href)#r\(Int((progression * 1000).rounded()))"
+        }
+        return href
+    }
+
     private func logTestCurl(_ message: String) {
-        print("[TestCurl] \(message)")
+        #if DEBUG
+        guard UserDefaults.standard.bool(forKey: "BookMark.TestCurlLogging") else { return }
+        Self.testCurlLogger.debug("\(message, privacy: .public)")
+        #endif
     }
 
     // MARK: - Interactive curl (pan-driven)

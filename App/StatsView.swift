@@ -81,7 +81,7 @@ struct StatsView: View {
 
                     recentSessionsSection
                         .padding(.horizontal, 16)
-                        .padding(.bottom, 24)
+                        .padding(.bottom, 96)
                 }
                 .readableContentWidth(hSizeClass == .regular ? 760 : .infinity)
             }
@@ -124,7 +124,7 @@ struct StatsView: View {
             Color.clear
                 .sheet(isPresented: $showStatsTools) {
                     statsToolsSheet
-                        .presentationDetents([.height(store.watchedFolderName == nil ? 660 : 715)])
+                        .presentationDetents([.large])
                         .glassSheetPresentation()
                 }
         )
@@ -263,6 +263,7 @@ struct StatsView: View {
                         }
                     }
 
+
                     Text("Data & Backup")
                         .font(.system(size: 13, weight: .bold))
                         .foregroundStyle(Theme.subtle)
@@ -284,6 +285,7 @@ struct StatsView: View {
             }
         }
     }
+
 
     private func statsToolRow(_ title: String, systemImage: String, role: ButtonRole? = nil, action: @escaping () -> Void) -> some View {
         Button(role: role) {
@@ -723,10 +725,16 @@ struct StatsView: View {
     }
 
     private func exportBackup() {
-        guard let data = try? store.makeBackupData() else { showToast("Backup failed"); return }
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("bookmark-backup.json")
-        try? data.write(to: url, options: .atomic)
-        ShareSheetPresenter.present([url])
+        let backup = store.makeBackup()
+        Task {
+            do {
+                let data = try await StorePersistence.shared.backupData(backup, prettyPrinted: true)
+                let url = try await StorePersistence.shared.writeTemporaryFile(data: data, filename: "bookmark-backup.json")
+                ShareSheetPresenter.present([url])
+            } catch {
+                showToast("Backup failed")
+            }
+        }
     }
 
     private func exportCsv() {
@@ -781,7 +789,16 @@ struct StatsView: View {
                     return
                 }
                 store.restoreBackup(backup)
-                showToast("Backup restored — \(backup.books.count) books, \(backup.sessions.count) sessions")
+                let restoredMessage = "Backup restored — \(backup.books.count) books, \(backup.sessions.count) sessions"
+                if let watchedFolder = store.resolveWatchedFolder() {
+                    showToast("\(restoredMessage). Linking EPUBs…")
+                    Task {
+                        let summary = await EPUBImporter.rescanFolder(watchedFolder, into: store)
+                        showToast("\(restoredMessage) · \(importSummaryMessage(summary, empty: "No EPUBs linked"))")
+                    }
+                } else {
+                    showToast(restoredMessage)
+                }
             } catch {
                 showToast("Restore failed: \(error.localizedDescription)")
             }

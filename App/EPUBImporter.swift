@@ -1,7 +1,11 @@
 import Foundation
+import OSLog
 import UIKit
 
 enum EPUBImporter {
+    private static let logger = Logger(subsystem: "BookMark", category: "EPUBImporter")
+    @MainActor private static var importingFingerprints = Set<String>()
+
     struct ImportSummary {
         var added = 0
         var relinked = 0
@@ -30,7 +34,7 @@ enum EPUBImporter {
             defer { if needsStop { url.stopAccessingSecurityScopedResource() } }
 
             do {
-                let outcome = try importFile(url, into: store)
+                let outcome = try await importFile(url, into: store)
                 switch outcome {
                 case .added:
                     summary.added += 1
@@ -42,7 +46,7 @@ enum EPUBImporter {
             } catch {
                 summary.failed += 1
                 #if DEBUG
-                print("EPUB import failed: \(error)")
+                logger.debug("EPUB import failed: \(error.localizedDescription, privacy: .public)")
                 #endif
             }
         }
@@ -64,7 +68,7 @@ enum EPUBImporter {
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("onboarding-sample-\(UUID().uuidString).epub")
         do {
-            try data.write(to: tmp, options: .atomic)
+            try await writeData(data, to: tmp)
             _ = await importFiles([tmp], into: store)
             try? FileManager.default.removeItem(at: tmp)
         } catch {
@@ -78,26 +82,14 @@ enum EPUBImporter {
         let needsStop = folder.startAccessingSecurityScopedResource()
         defer { if needsStop { folder.stopAccessingSecurityScopedResource() } }
 
-        let options: FileManager.DirectoryEnumerationOptions = [.skipsHiddenFiles, .skipsPackageDescendants]
-        let keys: [URLResourceKey] = [.isRegularFileKey]
-        guard let enumerator = FileManager.default.enumerator(
-            at: folder,
-            includingPropertiesForKeys: keys,
-            options: options
-        ) else {
+        guard let urls = await epubURLs(in: folder) else {
             return ImportSummary(failed: 1)
-        }
-
-        let urls = enumerator.compactMap { item -> URL? in
-            guard let url = item as? URL, url.pathExtension.lowercased() == "epub" else { return nil }
-            let values = try? url.resourceValues(forKeys: Set(keys))
-            return values?.isRegularFile == true ? url : nil
         }
 
         var summary = ImportSummary()
         for url in urls {
             do {
-                let outcome = try importFile(url, into: store)
+                let outcome = try await importFile(url, into: store)
                 switch outcome {
                 case .added:
                     summary.added += 1
@@ -109,7 +101,7 @@ enum EPUBImporter {
             } catch {
                 summary.failed += 1
                 #if DEBUG
-                print("EPUB folder rescan failed for \(url.lastPathComponent): \(error)")
+                logger.debug("EPUB folder rescan failed for \(url.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
                 #endif
             }
         }
@@ -123,13 +115,13 @@ enum EPUBImporter {
     static func relinkBook(id: String, with url: URL, into store: Store) async -> RelinkResult {
         let needsStop = url.startAccessingSecurityScopedResource()
         defer { if needsStop { url.stopAccessingSecurityScopedResource() } }
-        guard let data = try? Data(contentsOf: url) else { return .unreadable }
+        guard let data = try? await readData(from: url) else { return .unreadable }
 
         do {
             // Always write into a fresh UUID filename so cached `EPUBPackage`
             // values held by widgets / share extensions don't see stale data.
             let dest = Store.epubsDirectory().appendingPathComponent(UUID().uuidString + ".epub")
-            try data.write(to: dest, options: .atomic)
+            try await writeData(data, to: dest)
 
             // Drop the prior file if any, ignoring failure (it may already be gone).
             if let existing = store.books.first(where: { $0.id == id }), let prior = existing.fileName {
@@ -164,24 +156,26 @@ enum EPUBImporter {
             return .success
         } catch {
             #if DEBUG
-            print("EPUB relink failed: \(error)")
+            logger.debug("EPUB relink failed: \(error.localizedDescription, privacy: .public)")
             #endif
             return .unreadable
         }
     }
 
     @MainActor
-    private static func importFile(_ url: URL, into store: Store) throws -> ImportOutcome {
-        let data = try Data(contentsOf: url)
+    private static func importFile(_ url: URL, into store: Store) async throws -> ImportOutcome {
+        let data = try await readData(from: url)
         let fingerprint = Store.contentFingerprint(for: data)
-        if store.containsBook(contentFingerprint: fingerprint) {
+        if store.containsBook(contentFingerprint: fingerprint) || importingFingerprints.contains(fingerprint) {
             return .skipped
         }
+        importingFingerprints.insert(fingerprint)
+        defer { importingFingerprints.remove(fingerprint) }
 
         let pkg = EPUBPackage.open(data: data)
 
         let dest = Store.epubsDirectory().appendingPathComponent(UUID().uuidString + ".epub")
-        try data.write(to: dest, options: .atomic)
+        try await writeData(data, to: dest)
 
         let title = pkg?.title ?? url.deletingPathExtension().lastPathComponent
         let author = pkg?.author ?? "Unknown Author"
@@ -220,6 +214,38 @@ enum EPUBImporter {
         return outcome
     }
 
+    private static func readData(from url: URL) async throws -> Data {
+        try await Task.detached(priority: .utility) {
+            try Data(contentsOf: url)
+        }.value
+    }
+
+    private static func writeData(_ data: Data, to url: URL) async throws {
+        try await Task.detached(priority: .utility) {
+            try data.write(to: url, options: .atomic)
+        }.value
+    }
+
+    private static func epubURLs(in folder: URL) async -> [URL]? {
+        await Task.detached(priority: .utility) {
+            let options: FileManager.DirectoryEnumerationOptions = [.skipsHiddenFiles, .skipsPackageDescendants]
+            let keys: [URLResourceKey] = [.isRegularFileKey]
+            guard let enumerator = FileManager.default.enumerator(
+                at: folder,
+                includingPropertiesForKeys: keys,
+                options: options
+            ) else {
+                return nil
+            }
+
+            return enumerator.compactMap { item -> URL? in
+                guard let url = item as? URL, url.pathExtension.lowercased() == "epub" else { return nil }
+                let values = try? url.resourceValues(forKeys: Set(keys))
+                return values?.isRegularFile == true ? url : nil
+            }
+        }.value
+    }
+
     /// Off-main-actor word count + main-actor store update. Safe to call
     /// from import, rescan, or first-launch backfill.
     @MainActor
@@ -245,15 +271,29 @@ enum EPUBImporter {
     static func backfillWordCounts(into store: Store) {
         let needsCount = store.books.filter { $0.totalWords == nil }
         guard !needsCount.isEmpty else { return }
-        for book in needsCount {
-            guard let fileName = book.fileName else { continue }
-            let url = Store.epubsDirectory().appendingPathComponent(fileName)
-            guard FileManager.default.fileExists(atPath: url.path),
-                  let data = try? Data(contentsOf: url),
-                  let pkg = EPUBPackage.open(data: data),
-                  !pkg.spine.isEmpty
-            else { continue }
-            countWordsInBackground(bookId: book.id, package: pkg, into: store)
+        let work = needsCount.compactMap { book -> (String, String)? in
+            guard let fileName = book.fileName else { return nil }
+            return (book.id, fileName)
+        }
+        guard !work.isEmpty else { return }
+
+        Task.detached(priority: .utility) {
+            for (bookId, fileName) in work {
+                let url = await Store.epubsDirectory().appendingPathComponent(fileName)
+                guard FileManager.default.fileExists(atPath: url.path),
+                      let data = try? Data(contentsOf: url),
+                      let pkg = EPUBPackage.open(data: data),
+                      !pkg.spine.isEmpty
+                else { continue }
+                let result = EPUBWordCounter.count(in: pkg)
+                await MainActor.run {
+                    store.updateWordCounts(
+                        bookId: bookId,
+                        perSpine: result.perSpine,
+                        total: result.total
+                    )
+                }
+            }
         }
     }
 

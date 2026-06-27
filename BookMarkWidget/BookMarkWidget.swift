@@ -245,9 +245,9 @@ struct ContinueReadingWidgetView: View {
     // ---- Large ----
 
     private var largeBody: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(alignment: .top, spacing: 12) {
-                coverView(width: 68, height: 102)
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .top, spacing: 10) {
+                coverView(width: 60, height: 90)
 
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(alignment: .top, spacing: 8) {
@@ -282,6 +282,8 @@ struct ContinueReadingWidgetView: View {
                                 Text("\(WidgetFmt.duration(secs)) total read")
                                     .font(.system(size: 10, weight: .semibold))
                                     .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.7)
                             }
                             Spacer(minLength: 0)
                             streakPair
@@ -304,7 +306,8 @@ struct ContinueReadingWidgetView: View {
                     values: snapshot.last7DaySeconds,
                     goalSeconds: snapshot.goalMinutes * 60,
                     yAxisLabel: "",
-                    xAxisLabel: ""
+                    xAxisLabel: "",
+                    plotHeight: 54
                 )
             }
 
@@ -317,7 +320,8 @@ struct ContinueReadingWidgetView: View {
                     labels: snapshot.last7DayLabels,
                     values: snapshot.last7DayPace,
                     yAxisLabel: "",
-                    xAxisLabel: ""
+                    xAxisLabel: "",
+                    plotHeight: 50
                 )
             }
         }
@@ -325,7 +329,7 @@ struct ContinueReadingWidgetView: View {
     }
 
     private var streakPair: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 6) {
             statBlock(emoji: "🔥", number: snapshot.currentStreak, label: "Current")
             statBlock(emoji: "🏆", number: snapshot.bestStreak, label: "Best")
         }
@@ -333,15 +337,20 @@ struct ContinueReadingWidgetView: View {
 
     private func statBlock(emoji: String, number: Int, label: String) -> some View {
         VStack(spacing: 1) {
-            HStack(spacing: 3) {
-                Text(emoji).font(.system(size: 12))
-                Text("\(number)").font(.system(size: 17, weight: .heavy))
+            HStack(spacing: 2) {
+                Text(emoji).font(.system(size: 10))
+                Text("\(number)")
+                    .font(.system(size: 15, weight: .heavy))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
             }
             Text(label.uppercased())
-                .font(.system(size: 8, weight: .heavy))
-                .tracking(0.4)
+                .font(.system(size: 7, weight: .heavy))
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
         }
+        .frame(width: 42)
     }
 
     // ---- Subviews ----

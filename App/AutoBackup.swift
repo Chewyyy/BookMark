@@ -46,7 +46,8 @@ enum AutoBackup {
 
     @discardableResult
     private static func write(store: Store, includeDatedCopy: Bool, silently: Bool) async -> String? {
-        guard let payload = try? store.makeBackupData() else { return nil }
+        let backup = store.makeBackup()
+        guard let payload = try? await StorePersistence.shared.backupData(backup, prettyPrinted: !silently) else { return nil }
 
         // Prefer a user-chosen folder (persists when the app is deleted, e.g. iCloud
         // Drive). Fall back to the app's Documents folder so the existing behavior
@@ -70,23 +71,16 @@ enum AutoBackup {
             locationLabel = "On My iPhone / BookSmarts"
         }
 
-        // 1) Always-current snapshot
-        let primary = target.appendingPathComponent("bookmark-database.json")
+        let datePart = isoDayFormatter.string(from: Date())
         do {
-            try payload.write(to: primary, options: .atomic)
+            try await StorePersistence.shared.writeBackup(
+                payload,
+                to: target,
+                includeDatedCopy: includeDatedCopy,
+                datePart: datePart
+            )
         } catch {
-            print("AutoBackup primary write failed: \(error)")
             return nil
-        }
-
-        // 2) Dated rolling copy in Backups/
-        if includeDatedCopy {
-            let backups = target.appendingPathComponent("Backups", isDirectory: true)
-            try? FileManager.default.createDirectory(at: backups, withIntermediateDirectories: true)
-
-            let datePart = isoDayFormatter.string(from: Date())
-            let dated = backups.appendingPathComponent("bookmark-backup-\(datePart).json")
-            try? payload.write(to: dated, options: .atomic)
         }
 
         UserDefaults.standard.set(Date(), forKey: lastBackupKey)

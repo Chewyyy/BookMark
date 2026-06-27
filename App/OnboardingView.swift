@@ -83,8 +83,15 @@ struct OnboardingView: View {
         .sheet(isPresented: $showWatchPicker) {
             FolderPicker { url in
                 showWatchPicker = false
-                try? store.setWatchedFolder(url)
-                Task { _ = await EPUBImporter.rescanFolder(url, into: store) }
+                do {
+                    try store.setWatchedFolder(url)
+                    let folder = store.resolveWatchedFolder() ?? url
+                    Task { _ = await EPUBImporter.rescanFolder(folder, into: store) }
+                } catch {
+                    #if DEBUG
+                    print("Couldn't watch folder: \(error.localizedDescription)")
+                    #endif
+                }
             }
         }
         .sheet(isPresented: $showBackupPicker) {

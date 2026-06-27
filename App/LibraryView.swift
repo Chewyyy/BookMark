@@ -23,11 +23,13 @@ struct LibraryView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
+        let continueBook = store.continueBook()
+
+        return VStack(spacing: 0) {
             header
             ScrollView {
                 VStack(spacing: 0) {
-                    if let bk = store.continueBook() {
+                    if let bk = continueBook {
                         ContinueReadingCard(
                             book: bk,
                             pct: store.progress[bk.id]?.pct ?? 0,
@@ -40,7 +42,7 @@ struct LibraryView: View {
                     }
                     statsStrip
                         .padding(.horizontal, 16)
-                        .padding(.top, store.continueBook() == nil ? 16 : 6)
+                        .padding(.top, continueBook == nil ? 16 : 6)
                         .padding(.bottom, 18)
 
                     if store.books.isEmpty {
@@ -57,7 +59,7 @@ struct LibraryView: View {
                     }
                 }
                 .readableContentWidth(hSizeClass == .regular ? 1000 : .infinity)
-                .padding(.bottom, 24)
+                .padding(.bottom, 96)
             }
             .background(Theme.background)
         }
@@ -65,9 +67,9 @@ struct LibraryView: View {
             BookActionsSheet(
                 book: book,
                 onContinue: { onOpenBook(book.id); bookActionTarget = nil },
-                onFinish: { finishTarget = book; bookActionTarget = nil },
-                onDetails: { detailTarget = book; bookActionTarget = nil },
-                onEditSeries: { editSeriesTarget = book; bookActionTarget = nil },
+                onFinish: { presentAfterActionsDismiss { finishTarget = book } },
+                onDetails: { presentAfterActionsDismiss { detailTarget = book } },
+                onEditSeries: { presentAfterActionsDismiss { editSeriesTarget = book } },
                 onRemove: { store.removeBook(id: book.id); bookActionTarget = nil; toast("Book removed") }
             )
             .presentationDetents([.height(410)])
@@ -272,6 +274,13 @@ struct LibraryView: View {
         .accessibilityLabel(text)
     }
 
+    private func presentAfterActionsDismiss(_ present: @escaping () -> Void) {
+        bookActionTarget = nil
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) {
+            present()
+        }
+    }
+
     private var viewModeToggle: some View {
         HStack(spacing: 2) {
             modePill(title: "All", active: !seriesMode) { seriesMode = false }
@@ -457,8 +466,16 @@ struct LibraryView: View {
     }
 
     private func exportBackup() {
-        guard let data = try? store.makeBackupData() else { toast("Backup failed"); return }
-        share(data: data, filename: "bookmark-backup.json", uti: "public.json")
+        let backup = store.makeBackup()
+        Task {
+            do {
+                let data = try await StorePersistence.shared.backupData(backup, prettyPrinted: true)
+                let url = try await StorePersistence.shared.writeTemporaryFile(data: data, filename: "bookmark-backup.json")
+                ShareSheetPresenter.present([url])
+            } catch {
+                toast("Backup failed")
+            }
+        }
     }
 
     private func exportCsv() {

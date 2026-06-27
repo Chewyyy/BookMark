@@ -34,7 +34,14 @@ final class Store: ObservableObject {
     private static var cachedStoreDirectory: URL?
 
     private var saveTask: Task<Void, Never>?
+    private var cloudSyncTask: Task<Void, Never>?
+    private var isCloudSyncing = false
     private var liveReadingSession: LiveReadingSession?
+
+    private static let cloudDeviceIDKey = "bookmark.icloud.deviceID"
+    private static let lastAppliedICloudSyncKey = "bookmark.icloud.lastAppliedSync"
+    private static let sessionModifiedAtKey = "bookmark.icloud.sessionModifiedAt"
+    private static let deletedSessionIDsKey = "bookmark.icloud.deletedSessionIDs"
 
     struct WatchedFolder: Codable, Hashable {
         var name: String
@@ -81,7 +88,8 @@ final class Store: ObservableObject {
         backupFolderName = backupFolder?.name
 
         reconcileReadableBookFiles()
-        backfillContentFingerprints()
+        await backfillContentFingerprints()
+        reconcileReadableBookFiles()
         normalizeOrder()
         // Mark books finished by progress
         for i in books.indices {
@@ -122,10 +130,317 @@ final class Store: ObservableObject {
         // the user-visible Files-app copy on its own debounce timer.
         AutoBackup.scheduleAutomatic(store: self)
         Task { await ReadingReminderScheduler.reschedule(for: self) }
+        scheduleICloudSync()
+    }
+
+    private func scheduleICloudSync() {
+        guard didHydrate, !isCloudSyncing else { return }
+        cloudSyncTask?.cancel()
+        cloudSyncTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard let self else { return }
+            await self.syncWithICloud()
+        }
     }
 
     func refreshSharedWidgetSnapshot() async {
         await writeSharedSnapshot()
+    }
+
+    func syncWithICloud() async {
+        guard didHydrate, ICloudSync.shared.isAvailable, !isCloudSyncing else { return }
+        isCloudSyncing = true
+        defer { isCloudSyncing = false }
+
+        let remotes = await ICloudSync.shared.readPayloads()
+            .filter(shouldApplyICloudPayload)
+            .sorted { $0.updatedAt < $1.updatedAt }
+        var mergedRemotePayload = false
+        for remote in remotes {
+            mergeICloudPayload(remote)
+            setLastAppliedICloudSyncDate(remote.updatedAt)
+            mergedRemotePayload = true
+        }
+        if mergedRemotePayload {
+            await writeSharedSnapshot()
+        }
+
+        let updatedAt = Date()
+        let payload = ICloudSyncPayload(
+            version: "icloud-1",
+            deviceID: Self.cloudDeviceID,
+            updatedAt: updatedAt,
+            backup: makeICloudBackup(),
+            sessionModifiedAt: sessionModifiedAtForSync(),
+            deletedSessionIDs: deletedSessionIDsForSync()
+        )
+        do {
+            try await ICloudSync.shared.writePayload(payload)
+            setLastAppliedICloudSyncDate(updatedAt)
+        } catch {
+            #if DEBUG
+            print("iCloud sync failed: \(error.localizedDescription)")
+            #endif
+        }
+    }
+
+    private func shouldApplyICloudPayload(_ payload: ICloudSyncPayload) -> Bool {
+        payload.deviceID != Self.cloudDeviceID
+    }
+
+    private func mergeICloudPayload(_ payload: ICloudSyncPayload) {
+        let remote = payload.backup
+        var remoteToLocalBookID: [String: String] = [:]
+
+        for remoteBook in remote.books {
+            if let localIndex = books.firstIndex(where: { $0.id == remoteBook.id }) {
+                mergeCloudBook(remoteBook, into: localIndex)
+                remoteToLocalBookID[remoteBook.id] = books[localIndex].id
+            } else if let fingerprint = remoteBook.contentFingerprint,
+                      let localIndex = books.firstIndex(where: { $0.contentFingerprint == fingerprint }) {
+                mergeCloudBook(remoteBook, into: localIndex)
+                remoteToLocalBookID[remoteBook.id] = books[localIndex].id
+            } else if let localIndex = books.firstIndex(where: { normalize($0.title) == normalize(remoteBook.title) && authorsMatch($0.author, remoteBook.author) }) {
+                mergeCloudBook(remoteBook, into: localIndex)
+                remoteToLocalBookID[remoteBook.id] = books[localIndex].id
+            } else {
+                books.append(remoteBook)
+                remoteToLocalBookID[remoteBook.id] = remoteBook.id
+            }
+        }
+
+        for remoteProgress in remote.progress {
+            let localID = remoteToLocalBookID[remoteProgress.key] ?? remoteProgress.key
+            progress[localID] = mergedProgress(progress[localID], remoteProgress.value)
+        }
+
+        mergeRemoteSessionDeletions(payload.deletedSessionIDs ?? [:])
+        let deletedSessionIDs = deletedSessionIDsForSync()
+        var sessionModifiedAt = sessionModifiedAtForSync()
+
+        for remoteSession in remote.sessions {
+            let incomingModifiedAt = payload.sessionModifiedAt?[remoteSession.id] ?? remoteSession.end ?? remoteSession.start
+            if let deletedAt = deletedSessionIDs[remoteSession.id], deletedAt >= incomingModifiedAt {
+                continue
+            }
+
+            var session = remoteSession
+            if let remoteBookID = session.bookId {
+                session.bookId = remoteToLocalBookID[remoteBookID] ?? remoteBookID
+            }
+            if isLiveSessionID(session.id), hasFinalSessionMatchingLive(session) {
+                markSessionDeleted(session.id)
+                continue
+            }
+
+            if let index = sessions.firstIndex(where: { $0.id == session.id }) {
+                let localModifiedAt = sessionModifiedAt[session.id] ?? sessions[index].end ?? sessions[index].start
+                if incomingModifiedAt > localModifiedAt {
+                    sessions[index] = sessionWithCalculatedPace(session)
+                    sessionModifiedAt[session.id] = incomingModifiedAt
+                    removeMatchingLiveSessions(for: session)
+                }
+            } else {
+                sessions.append(sessionWithCalculatedPace(session))
+                sessionModifiedAt[session.id] = incomingModifiedAt
+                removeMatchingLiveSessions(for: session)
+            }
+        }
+        for deletedID in deletedSessionIDsForSync().keys {
+            sessionModifiedAt.removeValue(forKey: deletedID)
+        }
+        saveSessionModifiedAt(sessionModifiedAt)
+
+        for remoteItems in remote.bookmarks {
+            let localID = remoteToLocalBookID[remoteItems.key] ?? remoteItems.key
+            bookmarks[localID] = mergedBookmarks(bookmarks[localID], remoteItems.value)
+        }
+
+        for remoteItems in remote.highlights ?? [:] {
+            let localID = remoteToLocalBookID[remoteItems.key] ?? remoteItems.key
+            highlights[localID] = mergedHighlights(highlights[localID], remoteItems.value)
+        }
+
+        goal = remote.goal
+        readerSettings = remote.readerSettings
+        readerSettings.pageCountMode = .paginatedBook
+        reconcileReadableBookFiles()
+        normalizeOrder()
+        scheduleSave()
+    }
+
+    private func mergeCloudBook(_ remote: Book, into index: Int) {
+        if books[index].coverData == nil { books[index].coverData = remote.coverData }
+        if books[index].fileName == nil || !epubFileExists(for: books[index]) { books[index].fileName = remote.fileName }
+        if books[index].contentFingerprint == nil { books[index].contentFingerprint = remote.contentFingerprint }
+        if books[index].totalLocations == nil { books[index].totalLocations = remote.totalLocations }
+        if books[index].wordCountsPerSpine == nil { books[index].wordCountsPerSpine = remote.wordCountsPerSpine }
+        if books[index].totalWords == nil { books[index].totalWords = remote.totalWords }
+        if books[index].isbn == nil { books[index].isbn = remote.isbn }
+        if books[index].seriesName == nil, remote.seriesName != nil {
+            books[index].seriesName = remote.seriesName
+            books[index].seriesIndex = remote.seriesIndex
+            books[index].seriesSource = remote.seriesSource
+        }
+        if isUnknownAuthor(books[index].author), !isUnknownAuthor(remote.author) { books[index].author = remote.author }
+        if normalize(books[index].title).isEmpty, !normalize(remote.title).isEmpty { books[index].title = remote.title }
+        if remote.finished {
+            books[index].finished = true
+            if books[index].finishedAt == nil || (remote.finishedAt ?? .distantFuture) < (books[index].finishedAt ?? .distantFuture) {
+                books[index].finishedAt = remote.finishedAt
+            }
+        }
+        if let remoteCache = remote.paginationCache {
+            var cache = books[index].paginationCache ?? [:]
+            for (key, settings) in remoteCache {
+                if let existing = cache[key], existing.computedAt >= settings.computedAt { continue }
+                cache[key] = settings
+            }
+            books[index].paginationCache = cache
+        }
+    }
+
+    private func mergeRemoteSessionDeletions(_ remoteDeleted: [String: Date]) {
+        guard !remoteDeleted.isEmpty else { return }
+        var localDeleted = deletedSessionIDsForSync()
+        var localModified = sessionModifiedAtForSync()
+
+        for (sessionID, deletedAt) in remoteDeleted {
+            if (localDeleted[sessionID] ?? .distantPast) < deletedAt {
+                localDeleted[sessionID] = deletedAt
+            }
+            if let index = sessions.firstIndex(where: { $0.id == sessionID }) {
+                let modifiedAt = localModified[sessionID] ?? sessions[index].end ?? sessions[index].start
+                if deletedAt >= modifiedAt {
+                    sessions.remove(at: index)
+                    localModified.removeValue(forKey: sessionID)
+                }
+            }
+        }
+
+        saveDeletedSessionIDs(localDeleted)
+        saveSessionModifiedAt(localModified)
+    }
+
+    private func sessionModifiedAtForSync() -> [String: Date] {
+        loadDateMap(Self.sessionModifiedAtKey)
+    }
+
+    private func deletedSessionIDsForSync() -> [String: Date] {
+        loadDateMap(Self.deletedSessionIDsKey)
+    }
+
+    private func markSessionModified(_ id: String, at date: Date = Date()) {
+        var modified = sessionModifiedAtForSync()
+        modified[id] = date
+        saveSessionModifiedAt(modified)
+        var deleted = deletedSessionIDsForSync()
+        if deleted.removeValue(forKey: id) != nil {
+            saveDeletedSessionIDs(deleted)
+        }
+    }
+
+    private func markSessionDeleted(_ id: String, at date: Date = Date()) {
+        var deleted = deletedSessionIDsForSync()
+        deleted[id] = date
+        saveDeletedSessionIDs(deleted)
+        var modified = sessionModifiedAtForSync()
+        modified.removeValue(forKey: id)
+        saveSessionModifiedAt(modified)
+    }
+
+    private func saveSessionModifiedAt(_ value: [String: Date]) {
+        saveDateMap(value, key: Self.sessionModifiedAtKey)
+    }
+
+    private func saveDeletedSessionIDs(_ value: [String: Date]) {
+        saveDateMap(value, key: Self.deletedSessionIDsKey)
+    }
+
+    private func loadDateMap(_ key: String) -> [String: Date] {
+        guard let data = UserDefaults.standard.data(forKey: key) else { return [:] }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return (try? decoder.decode([String: Date].self, from: data)) ?? [:]
+    }
+
+    private func saveDateMap(_ value: [String: Date], key: String) {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        if let data = try? encoder.encode(value) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+
+    private func liveSessionID(for live: LiveReadingSession) -> String {
+        "live-\(Self.cloudDeviceID)-\(live.bookId)-\(Int(live.startedAt.timeIntervalSince1970))"
+    }
+
+    private func isLiveSessionID(_ id: String) -> Bool {
+        id.hasPrefix("live-")
+    }
+
+    private func sessionBookIDsMatch(_ lhs: ReadingSession, _ rhs: ReadingSession) -> Bool {
+        if let lhsID = lhs.bookId, let rhsID = rhs.bookId {
+            return lhsID == rhsID
+        }
+        return normalize(lhs.bookTitle) == normalize(rhs.bookTitle)
+    }
+
+    private func finalSessionMatchesLive(_ finalSession: ReadingSession, _ liveSession: ReadingSession) -> Bool {
+        guard !isLiveSessionID(finalSession.id), isLiveSessionID(liveSession.id), sessionBookIDsMatch(finalSession, liveSession) else {
+            return false
+        }
+        return abs(finalSession.start.timeIntervalSince(liveSession.start)) <= 2
+    }
+
+    private func hasFinalSessionMatchingLive(_ liveSession: ReadingSession) -> Bool {
+        sessions.contains { finalSessionMatchesLive($0, liveSession) }
+    }
+
+    private func removeMatchingLiveSessions(for finalSession: ReadingSession) {
+        guard !isLiveSessionID(finalSession.id) else { return }
+        let matchingIDs = Set(sessions.filter { finalSessionMatchesLive(finalSession, $0) }.map(\.id))
+        guard !matchingIDs.isEmpty else { return }
+        for id in matchingIDs {
+            markSessionDeleted(id)
+        }
+        sessions.removeAll { matchingIDs.contains($0.id) }
+    }
+
+    private func mergedBookmarks(_ existing: [Bookmark]?, _ incoming: [Bookmark]) -> [Bookmark] {
+        var merged = existing ?? []
+        var existingIDs = Set(merged.map(\.id))
+        for item in incoming where existingIDs.insert(item.id).inserted {
+            merged.append(item)
+        }
+        return merged.sorted { $0.createdAt < $1.createdAt }
+    }
+
+    private func mergedHighlights(_ existing: [Highlight]?, _ incoming: [Highlight]) -> [Highlight] {
+        var merged = existing ?? []
+        var existingIDs = Set(merged.map(\.id))
+        for item in incoming where existingIDs.insert(item.id).inserted {
+            merged.append(item)
+        }
+        return merged.sorted { $0.createdAt < $1.createdAt }
+    }
+
+    private static var cloudDeviceID: String {
+        if let existing = UserDefaults.standard.string(forKey: cloudDeviceIDKey) {
+            return existing
+        }
+        let created = UUID().uuidString
+        UserDefaults.standard.set(created, forKey: cloudDeviceIDKey)
+        return created
+    }
+
+    private func lastAppliedICloudSyncDate() -> Date {
+        Date(timeIntervalSince1970: UserDefaults.standard.double(forKey: Self.lastAppliedICloudSyncKey))
+    }
+
+    private func setLastAppliedICloudSyncDate(_ date: Date) {
+        UserDefaults.standard.set(date.timeIntervalSince1970, forKey: Self.lastAppliedICloudSyncKey)
     }
 
     func beginLiveReadingSession(bookId: String, progressPct: Double, cfi: String? = nil) {
@@ -151,11 +466,12 @@ final class Store: ObservableObject {
     }
 
     func endLiveReadingSession(bookId: String) {
-        guard liveReadingSession?.bookId == bookId else { return }
+        guard let live = liveReadingSession, live.bookId == bookId else { return }
+        markSessionDeleted(liveSessionID(for: live))
         liveReadingSession = nil
     }
 
-    private struct SaveSnapshot {
+    fileprivate struct SaveSnapshot {
         var books: [Book]
         var sessions: [ReadingSession]
         var progress: [String: ReadingProgress]
@@ -181,26 +497,10 @@ final class Store: ObservableObject {
     }
 
     private func writeSnapshot(_ s: SaveSnapshot) async {
-        let dir = Self.storeDirectory()
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try? Self.save(s.books,          to: dir.appendingPathComponent("books.json"))
-        try? Self.save(s.sessions,       to: dir.appendingPathComponent("sessions.json"))
-        try? Self.save(s.progress,       to: dir.appendingPathComponent("progress.json"))
-        try? Self.save(s.bookmarks,      to: dir.appendingPathComponent("bookmarks.json"))
-        try? Self.save(s.highlights,     to: dir.appendingPathComponent("highlights.json"))
-        try? Self.save(s.goal,           to: dir.appendingPathComponent("goal.json"))
-        try? Self.save(s.readerSettings, to: dir.appendingPathComponent("reader.json"))
-        let watchedURL = dir.appendingPathComponent("watched-folder.json")
-        if let watchedFolder = s.watchedFolder {
-            try? Self.save(watchedFolder, to: watchedURL)
-        } else {
-            try? FileManager.default.removeItem(at: watchedURL)
-        }
-        let backupURL = dir.appendingPathComponent("backup-folder.json")
-        if let backupFolder = s.backupFolder {
-            try? Self.save(backupFolder, to: backupURL)
-        } else {
-            try? FileManager.default.removeItem(at: backupURL)
+        do {
+            try await StorePersistence.shared.writeSnapshot(s, to: Self.storeDirectory())
+        } catch {
+            return
         }
     }
 
@@ -572,6 +872,10 @@ final class Store: ObservableObject {
 
     func addOrAttachBook(_ b: Book) -> (added: Bool, bookId: String) {
         var book = b
+        if let duplicateBookID = readableDuplicateBookID(for: book) {
+            removeUnusedIncomingEPUBFile(for: book, duplicateBookID: duplicateBookID)
+            return (false, duplicateBookID)
+        }
         if let fileName = book.fileName,
            let attachedBookID = attachEPUBFile(
             title: book.title,
@@ -588,6 +892,21 @@ final class Store: ObservableObject {
         normalizeOrder()
         scheduleSave()
         return (true, book.id)
+    }
+
+    private func readableDuplicateBookID(for book: Book) -> String? {
+        guard let contentFingerprint = book.contentFingerprint else { return nil }
+        return books.first {
+            $0.contentFingerprint == contentFingerprint && epubFileExists(for: $0)
+        }?.id
+    }
+
+    private func removeUnusedIncomingEPUBFile(for book: Book, duplicateBookID: String) {
+        guard let fileName = book.fileName else { return }
+        let duplicateFileName = books.first { $0.id == duplicateBookID }?.fileName
+        guard duplicateFileName != fileName else { return }
+        let url = Self.epubsDirectory().appendingPathComponent(fileName)
+        try? FileManager.default.removeItem(at: url)
     }
 
     func attachEPUBFile(title: String, author: String, coverData: Data?, fileName: String, contentFingerprint: String?) -> String? {
@@ -633,10 +952,44 @@ final class Store: ObservableObject {
             if books[i].coverData == nil {
                 books[i].coverData = duplicate.coverData
             }
-            if progress[books[i].id] == nil, let duplicateProgress = progress[duplicate.id] {
-                progress[books[i].id] = duplicateProgress
-            }
+            mergeBookData(from: duplicate.id, into: books[i].id)
             idsToRemove.insert(duplicate.id)
+        }
+
+        if !idsToRemove.isEmpty {
+            books.removeAll { idsToRemove.contains($0.id) }
+            for id in idsToRemove {
+                progress.removeValue(forKey: id)
+                bookmarks.removeValue(forKey: id)
+                highlights.removeValue(forKey: id)
+            }
+        }
+
+        removeReadableDuplicateBooks()
+    }
+
+    private func removeReadableDuplicateBooks() {
+        let groups = Dictionary(grouping: books.filter { book in
+            guard book.contentFingerprint != nil else { return false }
+            return epubFileExists(for: book)
+        }) { book in
+            book.contentFingerprint ?? ""
+        }
+        let duplicateGroups = groups.values.filter { $0.count > 1 }
+        guard !duplicateGroups.isEmpty else { return }
+
+        var idsToRemove = Set<String>()
+        var fileNamesToRemove = Set<String>()
+
+        for group in duplicateGroups {
+            guard let keeper = group.sorted(by: shouldPreferDuplicateKeeper).first else { continue }
+            for duplicate in group where duplicate.id != keeper.id {
+                mergeBookData(from: duplicate.id, into: keeper.id)
+                idsToRemove.insert(duplicate.id)
+                if let duplicateFileName = duplicate.fileName, duplicateFileName != keeper.fileName {
+                    fileNamesToRemove.insert(duplicateFileName)
+                }
+            }
         }
 
         guard !idsToRemove.isEmpty else { return }
@@ -646,15 +999,146 @@ final class Store: ObservableObject {
             bookmarks.removeValue(forKey: id)
             highlights.removeValue(forKey: id)
         }
+        for fileName in fileNamesToRemove {
+            try? FileManager.default.removeItem(at: Self.epubsDirectory().appendingPathComponent(fileName))
+        }
     }
 
-    private func backfillContentFingerprints() {
+    private func shouldPreferDuplicateKeeper(_ lhs: Book, _ rhs: Book) -> Bool {
+        let lhsProgress = progress[lhs.id]
+        let rhsProgress = progress[rhs.id]
+        let lhsLastRead = lhsProgress?.lastRead ?? .distantPast
+        let rhsLastRead = rhsProgress?.lastRead ?? .distantPast
+        if lhsLastRead != rhsLastRead { return lhsLastRead > rhsLastRead }
+
+        let lhsPct = lhsProgress?.pct ?? 0
+        let rhsPct = rhsProgress?.pct ?? 0
+        if lhsPct != rhsPct { return lhsPct > rhsPct }
+
+        let lhsSeconds = sessions.reduce(0) { $0 + ($1.bookId == lhs.id ? $1.secs : 0) }
+        let rhsSeconds = sessions.reduce(0) { $0 + ($1.bookId == rhs.id ? $1.secs : 0) }
+        if lhsSeconds != rhsSeconds { return lhsSeconds > rhsSeconds }
+
+        if lhs.finished != rhs.finished { return lhs.finished }
+        if lhs.added != rhs.added { return lhs.added < rhs.added }
+        return lhs.order < rhs.order
+    }
+
+    private func mergeBookData(from duplicateID: String, into keeperID: String) {
+        guard duplicateID != keeperID,
+              let keeperIndex = books.firstIndex(where: { $0.id == keeperID }),
+              let duplicate = books.first(where: { $0.id == duplicateID })
+        else { return }
+
+        if books[keeperIndex].coverData == nil {
+            books[keeperIndex].coverData = duplicate.coverData
+        }
+        if books[keeperIndex].totalLocations == nil {
+            books[keeperIndex].totalLocations = duplicate.totalLocations
+        }
+        if books[keeperIndex].wordCountsPerSpine == nil {
+            books[keeperIndex].wordCountsPerSpine = duplicate.wordCountsPerSpine
+        }
+        if books[keeperIndex].totalWords == nil {
+            books[keeperIndex].totalWords = duplicate.totalWords
+        }
+        if books[keeperIndex].isbn == nil {
+            books[keeperIndex].isbn = duplicate.isbn
+        }
+        if books[keeperIndex].seriesName == nil, duplicate.seriesName != nil {
+            books[keeperIndex].seriesName = duplicate.seriesName
+            books[keeperIndex].seriesIndex = duplicate.seriesIndex
+            books[keeperIndex].seriesSource = duplicate.seriesSource
+        }
+        if isUnknownAuthor(books[keeperIndex].author), !isUnknownAuthor(duplicate.author) {
+            books[keeperIndex].author = duplicate.author
+        }
+        if duplicate.finished {
+            books[keeperIndex].finished = true
+            if books[keeperIndex].finishedAt == nil || (duplicate.finishedAt ?? .distantFuture) < (books[keeperIndex].finishedAt ?? .distantFuture) {
+                books[keeperIndex].finishedAt = duplicate.finishedAt
+            }
+        }
+        if let duplicateCache = duplicate.paginationCache {
+            var cache = books[keeperIndex].paginationCache ?? [:]
+            for (key, settings) in duplicateCache {
+                if let existing = cache[key] {
+                    if settings.computedAt > existing.computedAt {
+                        cache[key] = settings
+                    }
+                } else {
+                    cache[key] = settings
+                }
+            }
+            books[keeperIndex].paginationCache = cache
+        }
+
+        if let duplicateProgress = progress[duplicateID] {
+            progress[keeperID] = mergedProgress(progress[keeperID], duplicateProgress)
+        }
+        for i in sessions.indices where sessions[i].bookId == duplicateID {
+            sessions[i].bookId = keeperID
+        }
+        mergeBookmarks(from: duplicateID, into: keeperID)
+        mergeHighlights(from: duplicateID, into: keeperID)
+        if liveReadingSession?.bookId == duplicateID {
+            liveReadingSession?.bookId = keeperID
+        }
+    }
+
+    private func mergedProgress(_ existing: ReadingProgress?, _ incoming: ReadingProgress) -> ReadingProgress {
+        guard let existing else { return incoming }
+        if incoming.lastRead != existing.lastRead {
+            return incoming.lastRead > existing.lastRead ? incoming : existing
+        }
+        return incoming.pct > existing.pct ? incoming : existing
+    }
+
+    private func mergeBookmarks(from duplicateID: String, into keeperID: String) {
+        guard let incoming = bookmarks[duplicateID], !incoming.isEmpty else { return }
+        var merged = bookmarks[keeperID] ?? []
+        var existingIDs = Set(merged.map(\.id))
+        for item in incoming where existingIDs.insert(item.id).inserted {
+            merged.append(item)
+        }
+        bookmarks[keeperID] = merged.sorted { $0.createdAt < $1.createdAt }
+    }
+
+    private func mergeHighlights(from duplicateID: String, into keeperID: String) {
+        guard let incoming = highlights[duplicateID], !incoming.isEmpty else { return }
+        var merged = highlights[keeperID] ?? []
+        var existingIDs = Set(merged.map(\.id))
+        for item in incoming where existingIDs.insert(item.id).inserted {
+            merged.append(item)
+        }
+        highlights[keeperID] = merged.sorted { $0.createdAt < $1.createdAt }
+    }
+
+    private func backfillContentFingerprints() async {
+        let directory = Self.epubsDirectory()
+        let work = books.compactMap { book -> (id: String, fileName: String)? in
+            guard book.contentFingerprint == nil, let fileName = book.fileName else { return nil }
+            return (book.id, fileName)
+        }
+        guard !work.isEmpty else { return }
+
+        let fingerprints = await Task.detached(priority: .utility) {
+            work.compactMap { item -> (id: String, fingerprint: String)? in
+                let url = directory.appendingPathComponent(item.fileName)
+                guard let data = try? Data(contentsOf: url) else { return nil }
+                let fingerprint = SHA256.hash(data: data)
+                    .map { String(format: "%02x", $0) }
+                    .joined()
+                return (item.id, fingerprint)
+            }
+        }.value
+
         var changed = false
-        for i in books.indices where books[i].contentFingerprint == nil {
-            guard let fileName = books[i].fileName else { continue }
-            let url = Self.epubsDirectory().appendingPathComponent(fileName)
-            guard let data = try? Data(contentsOf: url) else { continue }
-            books[i].contentFingerprint = Self.contentFingerprint(for: data)
+        for item in fingerprints {
+            guard let index = books.firstIndex(where: { $0.id == item.id }),
+                  books[index].contentFingerprint == nil
+            else { continue }
+            books[index].contentFingerprint = item.fingerprint
             changed = true
         }
         if changed {
@@ -944,13 +1428,17 @@ final class Store: ObservableObject {
     // MARK: - Sessions
 
     func addSession(_ s: ReadingSession) {
-        sessions.append(sessionWithCalculatedPace(s))
+        let session = sessionWithCalculatedPace(s)
+        sessions.append(session)
+        markSessionModified(session.id)
+        removeMatchingLiveSessions(for: session)
         scheduleSave()
     }
 
     func updateSession(_ s: ReadingSession) {
         if let i = sessions.firstIndex(where: { $0.id == s.id }) {
             sessions[i] = sessionWithCalculatedPace(s)
+            markSessionModified(s.id)
             scheduleSave()
         }
     }
@@ -975,6 +1463,7 @@ final class Store: ObservableObject {
 
     func deleteSession(id: String) {
         sessions.removeAll { $0.id == id }
+        markSessionDeleted(id)
         scheduleSave()
     }
 
@@ -1073,6 +1562,36 @@ final class Store: ObservableObject {
         )
     }
 
+    private func makeICloudBackup() -> Backup {
+        var backup = makeBackup()
+        guard let live = liveReadingSession,
+              live.elapsedSeconds >= 60,
+              let book = books.first(where: { $0.id == live.bookId })
+        else {
+            return backup
+        }
+
+        let sessionID = liveSessionID(for: live)
+        markSessionModified(sessionID, at: live.startedAt)
+        let session = ReadingSession(
+            id: sessionID,
+            bookId: live.bookId,
+            bookTitle: book.title,
+            start: live.startedAt,
+            end: Date(),
+            secs: live.elapsedSeconds,
+            progressDelta: max(0, live.progressPct - (progress[live.bookId]?.pct ?? live.progressPct)),
+            manual: false
+        )
+        if let index = backup.sessions.firstIndex(where: { $0.id == sessionID }) {
+            backup.sessions[index] = sessionWithCalculatedPace(session)
+        } else {
+            backup.sessions.append(sessionWithCalculatedPace(session))
+        }
+        backup.progress[live.bookId] = ReadingProgress(pct: live.progressPct, cfi: live.cfi, lastRead: Date())
+        return backup
+    }
+
     func restoreBackup(_ b: Backup) {
         books = b.books
         sessions = b.sessions
@@ -1082,6 +1601,7 @@ final class Store: ObservableObject {
         goal = b.goal
         readerSettings = b.readerSettings
         readerSettings.pageCountMode = .paginatedBook
+        reconcileReadableBookFiles()
         normalizeOrder()
         scheduleSave()
     }
@@ -1107,5 +1627,70 @@ final class Store: ObservableObject {
 
     static func contentFingerprint(for data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+actor StorePersistence {
+    static let shared = StorePersistence()
+
+    fileprivate func writeSnapshot(_ snapshot: Store.SaveSnapshot, to directory: URL) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try save(snapshot.books, to: directory.appendingPathComponent("books.json"))
+        try save(snapshot.sessions, to: directory.appendingPathComponent("sessions.json"))
+        try save(snapshot.progress, to: directory.appendingPathComponent("progress.json"))
+        try save(snapshot.bookmarks, to: directory.appendingPathComponent("bookmarks.json"))
+        try save(snapshot.highlights, to: directory.appendingPathComponent("highlights.json"))
+        try save(snapshot.goal, to: directory.appendingPathComponent("goal.json"))
+        try save(snapshot.readerSettings, to: directory.appendingPathComponent("reader.json"))
+
+        let watchedURL = directory.appendingPathComponent("watched-folder.json")
+        if let watchedFolder = snapshot.watchedFolder {
+            try save(watchedFolder, to: watchedURL)
+        } else {
+            try? FileManager.default.removeItem(at: watchedURL)
+        }
+
+        let backupURL = directory.appendingPathComponent("backup-folder.json")
+        if let backupFolder = snapshot.backupFolder {
+            try save(backupFolder, to: backupURL)
+        } else {
+            try? FileManager.default.removeItem(at: backupURL)
+        }
+    }
+
+    func backupData(_ backup: Store.Backup, prettyPrinted: Bool) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = prettyPrinted ? [.prettyPrinted, .sortedKeys] : [.sortedKeys]
+        return try encoder.encode(backup)
+    }
+
+    func writeBackup(_ payload: Data, to target: URL, includeDatedCopy: Bool, datePart: String) throws {
+        let primary = target.appendingPathComponent("bookmark-database.json")
+        try payload.write(to: primary, options: .atomic)
+
+        if includeDatedCopy {
+            let backups = target.appendingPathComponent("Backups", isDirectory: true)
+            try FileManager.default.createDirectory(at: backups, withIntermediateDirectories: true)
+            let dated = backups.appendingPathComponent("bookmark-backup-\(datePart).json")
+            try payload.write(to: dated, options: .atomic)
+        }
+    }
+
+    func writeTemporaryFile(data: Data, filename: String) throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+        try data.write(to: url, options: .atomic)
+        return url
+    }
+
+    private func save<T: Encodable>(_ value: T, to url: URL) throws {
+        try encodedData(value).write(to: url, options: .atomic)
+    }
+
+    private func encodedData<T: Encodable>(_ value: T) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return try encoder.encode(value)
     }
 }

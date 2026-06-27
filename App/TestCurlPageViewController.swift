@@ -1,4 +1,5 @@
 import UIKit
+import OSLog
 
 struct TestCurlPageLabels: Equatable {
     static let empty = TestCurlPageLabels(currentPage: nil, totalPages: nil)
@@ -30,6 +31,7 @@ struct TestCurlPageLabels: Equatable {
 
 @MainActor
 final class TestCurlPageViewController: UIViewController, UIPageViewControllerDataSource, UIPageViewControllerDelegate, UIGestureRecognizerDelegate {
+    private static let logger = Logger(subsystem: "BookMark", category: "TestCurl")
     enum State: String {
         case idle
         case preparingTurn
@@ -217,12 +219,14 @@ final class TestCurlPageViewController: UIViewController, UIPageViewControllerDa
         }
 
         isProgrammaticTurn = true
+        pageViewController.isDoubleSided = false
         state = direction > 0 ? .curlingForward : .curlingBackward
         let navigationDirection: UIPageViewController.NavigationDirection = direction > 0 ? .forward : .reverse
         pageViewController.setViewControllers([destination], direction: navigationDirection, animated: true) { [weak self] finished in
             Task { @MainActor in
                 guard let self else { return }
                 self.isProgrammaticTurn = false
+                self.pageViewController.isDoubleSided = true
                 self.state = finished ? .completingTurn : .cancellingTurn
                 self.log("programmaticTransitionFinished=\(finished) direction=\(direction)")
                 self.onTurnCompleted(direction, finished)
@@ -264,7 +268,7 @@ final class TestCurlPageViewController: UIViewController, UIPageViewControllerDa
 
     func pageViewController(_ pageViewController: UIPageViewController,
                             spineLocationFor orientation: UIInterfaceOrientation) -> UIPageViewController.SpineLocation {
-        pageViewController.isDoubleSided = true
+        pageViewController.isDoubleSided = !isProgrammaticTurn
         return .min
     }
 
@@ -424,6 +428,9 @@ final class TestCurlPageViewController: UIViewController, UIPageViewControllerDa
     }
 
     private func log(_ message: String) {
-        print("[TestCurl] \(message)")
+        #if DEBUG
+        guard UserDefaults.standard.bool(forKey: "BookMark.TestCurlLogging") else { return }
+        Self.logger.debug("\(message, privacy: .public)")
+        #endif
     }
 }
