@@ -31,6 +31,7 @@ final class PageTurnAnimator {
     var showsTestCurlPageLabel = true
     var onTestCurlPageTurn: ((Int) -> Void)?
     var onTestCurlCenterTap: (() -> Void)?
+    var onTestCurlTextInteractionRequest: (() -> Void)?
     var onTestCurlPreloadStateChange: ((Bool) -> Void)?
     /// Fires once a Test Curl turn's real navigation has settled, BEFORE the
     /// adjacent-page preload window opens. Lets the host replay the genuine
@@ -55,6 +56,13 @@ final class PageTurnAnimator {
     private var isTestCurlPrepScheduled = false
     private var activeLoadingRetryCount = 0
     private weak var testCurlController: TestCurlPageViewController?
+    /// True while the user has an active live text selection. In Test Curl we
+    /// hide the snapshot overlay (so the live WebView's native selection +
+    /// handles + edit menu are visible) and disable the relocated curl pan (so
+    /// dragging a selection handle doesn't start a page turn). In every mode the
+    /// swipe-turn pan reads this to avoid turning the page while a selection
+    /// handle is being dragged.
+    private(set) var isReaderSelectionActive = false
     /// Locator key (href + book position) the overlay was last prepared for.
     /// Used only by the location-change refresh path to skip re-preparing for
     /// the page we're already showing — the guard that breaks the idle
@@ -169,14 +177,29 @@ final class PageTurnAnimator {
 
     func refreshTestCurlIfReady() {
         guard isTestCurlEnabled, !isPreparingTestCurl, !isTestCurlPrepScheduled else { return }
+        guard !isReaderSelectionActive else { return }
         guard canPrepareTestCurl?() ?? true else { return }
         isTestCurlPrepScheduled = true
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 160_000_000)
             self.isTestCurlPrepScheduled = false
             guard self.isTestCurlEnabled, !self.isPreparingTestCurl else { return }
+            guard !self.isReaderSelectionActive else { return }
             guard self.canPrepareTestCurl?() ?? true else { return }
             await self.prepareTestCurlOverlay()
+        }
+    }
+
+    /// Called when live text interaction begins or ends. In Test Curl this
+    /// removes the snapshot overlay so the live WebView's native selection UI is
+    /// visible, then rebuilds the overlay once text interaction is done.
+    func setSelectionActive(_ active: Bool) {
+        guard active != isReaderSelectionActive else { return }
+        isReaderSelectionActive = active
+        if active {
+            removeTestCurlOverlay()
+        } else if isTestCurlEnabled {
+            refreshTestCurlIfReady()
         }
     }
 
@@ -190,6 +213,7 @@ final class PageTurnAnimator {
             try? await Task.sleep(nanoseconds: self.testCurlRetryDelayNanoseconds())
             self.isTestCurlPrepScheduled = false
             guard self.isTestCurlEnabled, !self.isPreparingTestCurl else { return }
+            guard !self.isReaderSelectionActive else { return }
             guard self.canPrepareTestCurl?() ?? true else { return }
             await self.prepareTestCurlOverlay()
         }
@@ -220,6 +244,7 @@ final class PageTurnAnimator {
 
     private func prepareTestCurlOverlay() async {
         guard isTestCurlEnabled, !isPreparingTestCurl else { return }
+        guard !isReaderSelectionActive else { return }
         guard let hostView, let hostController, let nav = navigatorController else { return }
         isPreparingTestCurl = true
         defer {
@@ -280,6 +305,9 @@ final class PageTurnAnimator {
                 pageLabels: pageLabels,
                 onCenterTap: { [weak self] in
                     self?.onTestCurlCenterTap?()
+                },
+                onTextInteractionRequest: { [weak self] in
+                    self?.onTestCurlTextInteractionRequest?()
                 }
             ) { [weak self] direction, completed in
                 self?.handleTestCurlTransition(direction: direction, completed: completed)

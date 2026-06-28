@@ -124,9 +124,10 @@ struct OnboardingView: View {
 
     private func finish() {
         applyReminder()
-        store.readerSettings.pageAnim = selectedAnimation
-        store.readerSettings.fontSize = demoFontSize
-        store.scheduleSave()
+        var settings = store.readerSettings
+        settings.pageAnim = selectedAnimation
+        settings.fontSize = demoFontSize
+        store.updateReaderSettings(settings)
         // Import the sample first, then drop the onboarding gate, so the library
         // already shows the book the moment the tutorial closes.
         Task {

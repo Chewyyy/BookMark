@@ -3,6 +3,7 @@ import ReadiumShared
 import ReadiumStreamer
 import SwiftUI
 import UIKit
+import WebKit
 
 /// Aggregate location info passed up from Readium when the position changes.
 struct ReadiumLocation {
@@ -83,12 +84,14 @@ struct ReadiumReaderContainer: View {
     let highlights: [Highlight]
     let testCurlPageLabels: TestCurlPageLabels?
     let showsChrome: Bool
+    var interactionResetID: UUID? = nil
     let onLocationChange: (ReadiumLocation) -> Void
     let onChapterPageChange: (ReadiumChapterPageState?) -> Void
     let onPageTurn: (Int) -> Void
     let onCenterTap: () -> Void
     let onHighlightSelection: (String, String) -> Void
     let onPublicationReady: (Publication?) -> Void
+    let onExternalURL: (URL) -> Void
     let onDiagnosticPageTurnResult: (ReadiumDiagnosticPageTurnResult) -> Void
 
     @StateObject private var loader = ReadiumReaderLoader()
@@ -131,6 +134,9 @@ struct ReadiumReaderContainer: View {
                     onPageTurn: onPageTurn,
                     onCenterTap: onCenterTap,
                     onHighlightSelection: onHighlightSelection,
+                    onExternalURL: onExternalURL,
+                    onUnhandledTap: handleUnhandledTap,
+                    onReaderSwipe: { direction in turnPage(direction: direction) },
                     onInitFailure: { msg in loader.error = msg; loader.publication = nil }
                 )
             } else if let error = loader.error {
@@ -161,35 +167,30 @@ struct ReadiumReaderContainer: View {
                     .allowsHitTesting(false)
             }
 
-            // Tap zones overlay — driven by the bridge so we can call Readium's
-            // async navigator methods without holding the controller in SwiftUI.
+            // Page-turn gutters only. The center of the page falls through to
+            // Readium's WebView so links and text selection keep native behavior.
             GeometryReader { geo in
+                let gutterWidth = max(44, geo.size.width * 0.18)
                 HStack(spacing: 0) {
-                    tapZone(width: geo.size.width * 0.30) {
+                    pageTurnZone(width: gutterWidth, size: geo.size) {
                         turnPage(direction: -1)
                     }
-                    tapZone(width: geo.size.width * 0.40) { onCenterTap() }
-                    tapZone(width: geo.size.width * 0.30) {
+                    Color.clear
+                        .frame(maxWidth: .infinity)
+                        .allowsHitTesting(false)
+                    pageTurnZone(width: gutterWidth, size: geo.size) {
                         turnPage(direction: 1)
                     }
                 }
-                .gesture(
-                    DragGesture(minimumDistance: 8, coordinateSpace: .local)
-                        .onChanged { value in
-                            guard settings.swipe else { return }
-                            updateInteractiveSwipe(value, size: geo.size)
-                        }
-                        .onEnded { value in
-                            guard settings.swipe else { return }
-                            finishInteractiveSwipe(value, size: geo.size)
-                        }
-                )
             }
             // Test Curl owns its own gesture pipeline once its overlay is mounted.
             // Until then (cold-open preload), keep this SwiftUI layer live so the
-            // center-tap and page turns aren't swallowed for the first few seconds.
-            .allowsHitTesting(settings.pageAnim != .testCurl || !bridge.isTestCurlOverlayReady)
+            // edge page turns aren't swallowed for the first few seconds. If a link
+            // or text selection just ran, the gutters stay live for one recovery
+            // turn so that gesture does not fall through to Readium's native slide.
+            .allowsHitTesting(settings.pageAnim != .testCurl || !bridge.isTestCurlOverlayReady || bridge.isReaderSelectionActive)
             .ignoresSafeArea()
+
         }
         .task(id: epubURL) {
             bridge.latestLocation = nil
@@ -202,17 +203,45 @@ struct ReadiumReaderContainer: View {
             guard let request else { return }
             performDiagnosticPageTurn(direction: request.direction)
         }
+        .onChange(of: interactionResetID) { _, id in
+            guard id != nil else { return }
+            bridge.clearActiveSelection()
+        }
     }
 
     @ViewBuilder
-    private func tapZone(width: CGFloat, onTap: @escaping () -> Void) -> some View {
+    private func pageTurnZone(width: CGFloat, size: CGSize, onTap: @escaping () -> Void) -> some View {
         Color.clear
             .frame(width: width)
             .contentShape(Rectangle())
             .onTapGesture { onTap() }
+            .gesture(
+                DragGesture(minimumDistance: 8, coordinateSpace: .local)
+                    .onChanged { value in
+                        guard settings.swipe else { return }
+                        updateInteractiveSwipe(value, size: size)
+                    }
+                    .onEnded { value in
+                        guard settings.swipe else { return }
+                        finishInteractiveSwipe(value, size: size)
+                    }
+            )
+    }
+
+    private func handleUnhandledTap(point: CGPoint, size: CGSize) {
+        guard size.width > 0 else { return }
+        let relativeX = point.x / size.width
+        if relativeX < 0.30 {
+            turnPage(direction: -1)
+        } else if relativeX > 0.70 {
+            turnPage(direction: 1)
+        } else {
+            onCenterTap()
+        }
     }
 
     private func turnPage(direction: Int) {
+        bridge.clearActiveSelection()
         let animation = settings.pageAnim
         if animation == .fade {
             performFadePageTurn(direction: direction)
@@ -405,6 +434,7 @@ final class ReadiumNavigatorBridge: ObservableObject {
     /// host keeps the SwiftUI tap layer live so taps/turns work during the
     /// cold-open preload instead of being swallowed for a few seconds.
     @Published var isTestCurlOverlayReady = false
+    @Published var isReaderSelectionActive = false
     /// True while a reader-state resync is replaying the live location. Replayed
     /// location updates must NOT schedule another Test Curl preload, or the
     /// preload→resync→replay cycle would loop forever.
@@ -468,6 +498,21 @@ final class ReadiumNavigatorBridge: ObservableObject {
 
     func refreshTestCurlIfNeeded() {
         animator?.refreshTestCurlForLocationChange()
+    }
+
+    func clearActiveSelection() {
+        if navigator?.currentSelection != nil {
+            navigator?.clearSelection()
+        }
+        setReaderSelectionActive(false)
+    }
+
+    /// Forwarded from the navigator delegate: a live text selection started or
+    /// ended. Lets the Test Curl overlay get out of the way (and back) so the
+    /// native selection UI is visible. Harmless in other modes.
+    func setReaderSelectionActive(_ active: Bool) {
+        isReaderSelectionActive = active
+        animator?.setSelectionActive(active)
     }
 
     func updateSuppressedTestCurlPreloadEchoKeys(_ keys: Set<String>) {
@@ -638,6 +683,9 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
     let onPageTurn: (Int) -> Void
     let onCenterTap: () -> Void
     let onHighlightSelection: (String, String) -> Void
+    let onExternalURL: (URL) -> Void
+    let onUnhandledTap: (CGPoint, CGSize) -> Void
+    let onReaderSwipe: (Int) -> Void
     let onInitFailure: (String) -> Void
     @Environment(\.horizontalSizeClass) private var hSizeClass
 
@@ -646,6 +694,9 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
             onLocationChange: onLocationChange,
             onChapterPageChange: onChapterPageChange,
             onHighlightSelection: onHighlightSelection,
+            onExternalURL: onExternalURL,
+            onUnhandledTap: onUnhandledTap,
+            linkColorHex: ReaderThemePalette.resolve(settings.theme).linkHex,
             positionsByResource: positionsByResource,
             publisherPages: publisherPages,
             publication: publication
@@ -674,11 +725,14 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
                 navigator: navigator,
                 palette: ReaderThemePalette.resolve(settings.theme)
             )
-            host.onHighlightSelection = { [weak navigator] selection in
+            host.onHighlightSelection = { [weak navigator, weak bridge] selection in
                 context.coordinator.addHighlight(selection)
                 navigator?.clearSelection()
+                bridge?.setReaderSelectionActive(false)
             }
+            context.coordinator.installReaderTapObserver(on: navigator)
             context.coordinator.lastPreferences = readiumPreferences(for: settings)
+            context.coordinator.bridge = bridge
             bridge.navigator = navigator
             bridge.animator = host.pageTurnAnimator
             host.pageTurnAnimator.updateTestCurlPageLabelVisibility(!showsChrome)
@@ -694,6 +748,9 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
             }
             host.pageTurnAnimator.onTestCurlCenterTap = {
                 onCenterTap()
+            }
+            host.pageTurnAnimator.onTestCurlTextInteractionRequest = { [weak bridge] in
+                bridge?.setReaderSelectionActive(true)
             }
             host.pageTurnAnimator.onTestCurlPreloadStateChange = { [weak bridge] isPreloading in
                 bridge?.isSuppressingTestCurlLocationUpdates = isPreloading
@@ -734,8 +791,10 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
         context.coordinator.positionsByResource = positionsByResource
         context.coordinator.publisherPages = publisherPages
         context.coordinator.publication = publication
+        context.coordinator.bridge = bridge
         bridge.navigator = navigator
         bridge.animator = host.pageTurnAnimator
+        context.coordinator.installReaderTapObserver(on: navigator)
         host.pageTurnAnimator.updateTestCurlPageLabelVisibility(!showsChrome)
         host.pageTurnAnimator.updateTestCurlPageLabels(testCurlPageLabels)
         host.pageTurnAnimator.latestLocationProvider = { [weak bridge] in
@@ -749,6 +808,9 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
         }
         host.pageTurnAnimator.onTestCurlCenterTap = {
             onCenterTap()
+        }
+        host.pageTurnAnimator.onTestCurlTextInteractionRequest = { [weak bridge] in
+            bridge?.setReaderSelectionActive(true)
         }
         host.pageTurnAnimator.onTestCurlPreloadStateChange = { [weak bridge] isPreloading in
             bridge?.isSuppressingTestCurlLocationUpdates = isPreloading
@@ -770,8 +832,13 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
             coordinator?.resyncReaderStateFromNavigator()
             bridge?.isResyncingReaderState = false
         }
-        host.pageTurnAnimator.updatePalette(ReaderThemePalette.resolve(settings.theme))
+        let palette = ReaderThemePalette.resolve(settings.theme)
+        host.pageTurnAnimator.updatePalette(palette)
         host.pageTurnAnimator.setTestCurlEnabled(settings.pageAnim == .testCurl)
+        if context.coordinator.linkColorHex != palette.linkHex {
+            context.coordinator.linkColorHex = palette.linkHex
+            Task { _ = await navigator.evaluateJavaScript(ReadiumEPUBNavigatorView.Coordinator.linkStyleScript(linkColorHex: palette.linkHex)) }
+        }
         context.coordinator.applyHighlights(highlights)
         if context.coordinator.lastPreferences != preferences {
             context.coordinator.lastPreferences = preferences
@@ -838,6 +905,8 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
 
     private func readiumTheme(for theme: ReaderTheme) -> ReadiumNavigator.Theme {
         switch theme {
+        case .device:
+            return UITraitCollection.current.userInterfaceStyle == .dark ? .dark : .light
         case .night, .focus: return .dark
         case .quiet: return .sepia
         case .original, .paper, .calm: return .light
@@ -882,6 +951,9 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
         var positionsByResource: [[Locator]]
         var publisherPages: [ReadiumPublisherPage]
         var publication: Publication
+        /// Set by the representable each update. Lets selection changes reach the
+        /// Test Curl overlay so it can reveal the live page during selection.
+        weak var bridge: ReadiumNavigatorBridge?
         private var appliedHighlightIDs: [String] = []
         private var lastChapterPageState: ReadiumChapterPageState?
         private var currentResourceIndex: Int?
@@ -890,11 +962,104 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
         private let onLocationChange: (ReadiumLocation) -> Void
         private let onChapterPageChange: (ReadiumChapterPageState?) -> Void
         private let onHighlightSelection: (String, String) -> Void
+        private let onExternalURL: (URL) -> Void
+        private let onUnhandledTap: (CGPoint, CGSize) -> Void
+        private var readerTapObserverToken: InputObservableToken?
+        var linkColorHex: String
+
+        static func linkStyleScript(linkColorHex: String) -> String {
+            let css = """
+            a[href] {
+                color: \(linkColorHex) !important;
+                text-decoration: underline !important;
+                text-decoration-thickness: 0.08em !important;
+                text-underline-offset: 0.16em !important;
+            }
+            """
+            let cssLiteral = javascriptStringLiteral(css)
+            return """
+            (function() {
+                var style = document.getElementById('bookmark-link-style');
+                if (!style) {
+                    style = document.createElement('style');
+                    style.id = 'bookmark-link-style';
+                    document.head.appendChild(style);
+                }
+                style.textContent = \(cssLiteral);
+
+                var urlPattern = /\\b((?:https?:\\/\\/|www\\.)[^\\s<>{}]+[^\\s<>{}.,;:!?)]?)/gi;
+                var skipTags = new Set(['A', 'SCRIPT', 'STYLE', 'TEXTAREA', 'INPUT', 'CODE', 'PRE']);
+                var walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT, {
+                    acceptNode: function(node) {
+                        var parent = node.parentElement;
+                        if (!parent || skipTags.has(parent.tagName) || parent.closest('a')) {
+                            return NodeFilter.FILTER_REJECT;
+                        }
+                        urlPattern.lastIndex = 0;
+                        return urlPattern.test(node.nodeValue || '') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+                    }
+                });
+                var nodes = [];
+                while (walker.nextNode()) { nodes.push(walker.currentNode); }
+                nodes.forEach(function(node) {
+                    var text = node.nodeValue || '';
+                    urlPattern.lastIndex = 0;
+                    var fragment = document.createDocumentFragment();
+                    var lastIndex = 0;
+                    text.replace(urlPattern, function(match, rawURL, offset) {
+                        if (offset > lastIndex) {
+                            fragment.appendChild(document.createTextNode(text.slice(lastIndex, offset)));
+                        }
+                        var anchor = document.createElement('a');
+                        anchor.textContent = rawURL;
+                        anchor.href = rawURL.match(/^https?:\\/\\//i) ? rawURL : 'https://' + rawURL;
+                        anchor.setAttribute('data-bookmark-autolink', 'true');
+                        fragment.appendChild(anchor);
+                        lastIndex = offset + rawURL.length;
+                        return match;
+                    });
+                    if (lastIndex < text.length) {
+                        fragment.appendChild(document.createTextNode(text.slice(lastIndex)));
+                    }
+                    node.parentNode.replaceChild(fragment, node);
+                });
+
+                if (!window.__bookmarkSelectionRecoveryInstalled) {
+                    window.__bookmarkSelectionRecoveryInstalled = true;
+                    var clearActiveSelection = function() {
+                        var selection = window.getSelection && window.getSelection();
+                        if (!selection || selection.isCollapsed) { return; }
+                        try {
+                            selection.removeAllRanges();
+                            document.dispatchEvent(new Event('selectionchange'));
+                        } catch (error) {}
+                    };
+                    window.addEventListener('pagehide', clearActiveSelection, true);
+                    document.addEventListener('visibilitychange', function() {
+                        if (document.visibilityState === 'hidden') {
+                            clearActiveSelection();
+                        }
+                    }, true);
+                }
+            })();
+            """
+        }
+
+        private static func javascriptStringLiteral(_ value: String) -> String {
+            guard let data = try? JSONEncoder().encode(value),
+                  let literal = String(data: data, encoding: .utf8) else {
+                return "\"\""
+            }
+            return literal
+        }
 
         init(
             onLocationChange: @escaping (ReadiumLocation) -> Void,
             onChapterPageChange: @escaping (ReadiumChapterPageState?) -> Void,
             onHighlightSelection: @escaping (String, String) -> Void,
+            onExternalURL: @escaping (URL) -> Void,
+            onUnhandledTap: @escaping (CGPoint, CGSize) -> Void,
+            linkColorHex: String,
             positionsByResource: [[Locator]],
             publisherPages: [ReadiumPublisherPage],
             publication: Publication
@@ -902,9 +1067,88 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
             self.onLocationChange = onLocationChange
             self.onChapterPageChange = onChapterPageChange
             self.onHighlightSelection = onHighlightSelection
+            self.onExternalURL = onExternalURL
+            self.onUnhandledTap = onUnhandledTap
+            self.linkColorHex = linkColorHex
             self.positionsByResource = positionsByResource
             self.publisherPages = publisherPages
             self.publication = publication
+        }
+
+        func navigator(_ navigator: EPUBNavigatorViewController, setupUserScripts userContentController: WKUserContentController) {
+            userContentController.addUserScript(WKUserScript(
+                source: Self.linkStyleScript(linkColorHex: linkColorHex),
+                injectionTime: .atDocumentEnd,
+                forMainFrameOnly: false
+            ))
+        }
+
+        func navigator(_ navigator: Navigator, presentExternalURL url: URL) {
+            _ = clearActiveSelectionIfNeeded(in: navigator)
+            onExternalURL(url)
+        }
+
+        func navigator(_ navigator: SelectableNavigator, shouldShowMenuForSelection selection: Selection) -> Bool {
+            // A live selection just formed. In Test Curl this gets the snapshot
+            // overlay out of the way so the native selection UI is visible.
+            bridge?.setReaderSelectionActive(true)
+            return true
+        }
+
+        func installReaderTapObserver(on navigator: EPUBNavigatorViewController) {
+            guard readerTapObserverToken == nil else { return }
+            readerTapObserverToken = navigator.addObserver(.activate { [weak self, weak navigator] event in
+                guard let self, let navigator else { return false }
+                return self.handleReaderActivation(at: event.location, in: navigator)
+            })
+        }
+
+        private func handleReaderActivation(at point: CGPoint, in navigator: VisualNavigator) -> Bool {
+            guard let view = navigator.view else { return false }
+            if clearActiveSelectionIfNeeded(in: navigator) {
+                return true
+            }
+            clearStaleSelectionModeIfNeeded(in: navigator)
+            guard isReaderEdgeTap(point, in: view.bounds.size) else { return false }
+            onUnhandledTap(point, view.bounds.size)
+            return true
+        }
+
+        func navigator(_ navigator: VisualNavigator, didTapAt point: CGPoint) {
+            guard let view = navigator.view else { return }
+            if clearActiveSelectionIfNeeded(in: navigator) {
+                return
+            }
+            clearStaleSelectionModeIfNeeded(in: navigator)
+            guard isReaderCenterTap(point, in: view.bounds.size) else { return }
+            onUnhandledTap(point, view.bounds.size)
+        }
+
+        private func clearActiveSelectionIfNeeded(in navigator: Any) -> Bool {
+            guard let epubNavigator = navigator as? EPUBNavigatorViewController,
+                  epubNavigator.currentSelection != nil else { return false }
+            epubNavigator.clearSelection()
+            bridge?.setReaderSelectionActive(false)
+            return true
+        }
+
+        private func clearStaleSelectionModeIfNeeded(in navigator: Any) {
+            guard bridge?.isReaderSelectionActive == true else { return }
+            guard let epubNavigator = navigator as? EPUBNavigatorViewController,
+                  epubNavigator.currentSelection == nil else { return }
+            bridge?.setReaderSelectionActive(false)
+        }
+
+        private func isReaderEdgeTap(_ point: CGPoint, in size: CGSize) -> Bool {
+            guard size.width > 0 else { return false }
+            let relativeX = point.x / size.width
+            return relativeX < 0.30 || relativeX > 0.70
+        }
+
+        private func isReaderCenterTap(_ point: CGPoint, in size: CGSize) -> Bool {
+            guard size.width > 0 else { return false }
+            let relativeX = point.x / size.width
+            return relativeX >= 0.30 && relativeX <= 0.70
         }
 
         func navigator(_ navigator: Navigator, locationDidChange locator: Locator) {
@@ -944,7 +1188,7 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
             }()
 
             let publisherPage = publisherPage(for: progress)
-            let chapterPageState = navigator.flatMap { chapterPageState(from: $0.viewport) }
+            let chapterPageState = chapterPageState(from: self.navigator?.viewport)
             lastChapterPageState = chapterPageState
             onLocationChange(ReadiumLocation(
                 totalProgress: progress,
@@ -1159,6 +1403,7 @@ final class ReaderNavigatorHostViewController: UIViewController {
         }
         // The animator places snapshot overlays into this view ABOVE the navigator.
         pageTurnAnimator.attach(hostView: view, hostController: self, navigator: navigator)
+
     }
 
     @objc func addBookMarkHighlight(_ sender: Any?) {

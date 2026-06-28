@@ -42,6 +42,17 @@ final class TestCurlPageViewController: UIViewController, UIPageViewControllerDa
         case syncingReadium
     }
 
+    private final class EdgePassthroughView: UIView {
+        var shouldOwnFullSurface: () -> Bool = { false }
+
+        override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+            guard bounds.contains(point) else { return false }
+            guard !shouldOwnFullSurface() else { return true }
+            let gutterWidth = max(44, bounds.width * 0.18)
+            return point.x <= gutterWidth || point.x >= bounds.width - gutterWidth
+        }
+    }
+
     private final class SnapshotPageController: UIViewController {
         let role: Int
         private let image: UIImage?
@@ -103,6 +114,7 @@ final class TestCurlPageViewController: UIViewController, UIPageViewControllerDa
     private var nextBackingPage: SnapshotPageController
     private var isProgrammaticTurn = false
     private let onCenterTap: () -> Void
+    private let onTextInteractionRequest: () -> Void
     private let onTurnCompleted: (Int, Bool) -> Void
     private(set) var state: State = .idle
     /// True once the page-curl controller has completed at least one layout pass.
@@ -117,6 +129,7 @@ final class TestCurlPageViewController: UIViewController, UIPageViewControllerDa
          labelColor: UIColor,
          pageLabels: TestCurlPageLabels,
          onCenterTap: @escaping () -> Void,
+         onTextInteractionRequest: @escaping () -> Void,
          onTurnCompleted: @escaping (Int, Bool) -> Void) {
         let backingImage = Self.makeBackingImage(from: currentImage, backgroundColor: backgroundColor)
         self.backgroundColor = backgroundColor
@@ -129,6 +142,7 @@ final class TestCurlPageViewController: UIViewController, UIPageViewControllerDa
         self.previousBackingPage = SnapshotPageController(role: -2, image: backingImage, backgroundColor: backgroundColor)
         self.nextBackingPage = SnapshotPageController(role: 2, image: backingImage, backgroundColor: backgroundColor)
         self.onCenterTap = onCenterTap
+        self.onTextInteractionRequest = onTextInteractionRequest
         self.onTurnCompleted = onTurnCompleted
         self.pageViewController = UIPageViewController(
             transitionStyle: .pageCurl,
@@ -140,6 +154,15 @@ final class TestCurlPageViewController: UIViewController, UIPageViewControllerDa
 
     required init?(coder: NSCoder) {
         nil
+    }
+
+    override func loadView() {
+        let passthroughView = EdgePassthroughView()
+        passthroughView.shouldOwnFullSurface = { [weak self] in
+            guard let self else { return false }
+            return self.state != .idle
+        }
+        view = passthroughView
     }
 
     override func viewDidLoad() {
@@ -162,6 +185,7 @@ final class TestCurlPageViewController: UIViewController, UIPageViewControllerDa
         pageViewController.view.isOpaque = true
         tintPageCurlBacking(in: pageViewController.view)
         installCenterTapRecognizer()
+        installCenterLongPressRecognizer()
         pageViewController.setViewControllers([currentPage], direction: .forward, animated: false)
         log("interactiveSurfaceReady previous=\(previousPage != nil) next=\(nextPage != nil)")
     }
@@ -300,11 +324,26 @@ final class TestCurlPageViewController: UIViewController, UIPageViewControllerDa
         pageViewController.view.addGestureRecognizer(tap)
     }
 
+    private func installCenterLongPressRecognizer() {
+        let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleCenterLongPress(_:)))
+        longPress.minimumPressDuration = 0.32
+        longPress.cancelsTouchesInView = false
+        longPress.delegate = self
+        pageViewController.view.addGestureRecognizer(longPress)
+    }
+
     @objc private func handleCenterTap(_ recognizer: UITapGestureRecognizer) {
         guard recognizer.state == .ended else { return }
         let location = recognizer.location(in: view)
         guard isCenterTapLocation(location) else { return }
         onCenterTap()
+    }
+
+    @objc private func handleCenterLongPress(_ recognizer: UILongPressGestureRecognizer) {
+        guard recognizer.state == .began else { return }
+        let location = recognizer.location(in: view)
+        guard isCenterTapLocation(location) else { return }
+        onTextInteractionRequest()
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {

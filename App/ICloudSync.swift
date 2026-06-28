@@ -7,6 +7,7 @@ struct ICloudSyncPayload: Codable {
     var backup: Store.Backup
     var sessionModifiedAt: [String: Date]?
     var deletedSessionIDs: [String: Date]?
+    var readerSettingsModifiedAt: Date?
 }
 
 

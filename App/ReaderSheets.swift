@@ -25,10 +25,9 @@ struct ReaderSettingsSheet: View {
             .padding(.bottom, 28)
         }
         .background(model.theme.backgroundColor)
-        .preferredColorScheme(model.theme.isDark ? .dark : .light)
+        .preferredColorScheme(model.settings.theme == .device ? nil : (model.theme.isDark ? .dark : .light))
         .onChange(of: model.settings) { _, new in
-            store.readerSettings = new
-            store.scheduleSave()
+            store.updateReaderSettings(new)
         }
     }
 
@@ -106,8 +105,13 @@ struct ReaderSettingsSheet: View {
 
     private var themeGroup: some View {
         SettingsGroup(title: "Theme") {
+            Text("No selected theme follows your device appearance: Original in Light Mode and Night in Dark Mode. Tap the selected theme again to clear it.")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(model.theme.secondaryForeground)
+                .fixedSize(horizontal: false, vertical: true)
+
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 10) {
-                ForEach(ReaderTheme.allCases, id: \.self) { t in
+                ForEach(ReaderTheme.displayCases, id: \.self) { t in
                     themeSwatch(t)
                 }
             }
@@ -118,7 +122,7 @@ struct ReaderSettingsSheet: View {
         let palette = ReaderThemePalette.resolve(t)
         let on = model.settings.theme == t
         return Button {
-            model.settings.theme = t
+            model.settings.theme = on ? .device : t
         } label: {
             VStack(spacing: 4) {
                 Text("Aa")
@@ -351,8 +355,11 @@ private extension ReaderFont {
 }
 
 private extension ReaderTheme {
+    static var displayCases: [ReaderTheme] { [.original, .quiet, .paper, .calm, .focus, .night] }
+
     var label: String {
         switch self {
+        case .device:   return "Device"
         case .original: return "Original"
         case .quiet:    return "Quiet"
         case .paper:    return "Paper"

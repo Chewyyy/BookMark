@@ -42,6 +42,7 @@ final class Store: ObservableObject {
     private static let lastAppliedICloudSyncKey = "bookmark.icloud.lastAppliedSync"
     private static let sessionModifiedAtKey = "bookmark.icloud.sessionModifiedAt"
     private static let deletedSessionIDsKey = "bookmark.icloud.deletedSessionIDs"
+    private static let readerSettingsModifiedAtKey = "bookmark.icloud.readerSettingsModifiedAt"
 
     struct WatchedFolder: Codable, Hashable {
         var name: String
@@ -129,6 +130,7 @@ final class Store: ObservableObject {
         // Mirror the webapp's `scheduleNativeBackup`: every persist also rolls
         // the user-visible Files-app copy on its own debounce timer.
         AutoBackup.scheduleAutomatic(store: self)
+        HomeQuickActionRouter.shared.updateShortcut(for: self)
         Task { await ReadingReminderScheduler.reschedule(for: self) }
         scheduleICloudSync()
     }
@@ -172,7 +174,8 @@ final class Store: ObservableObject {
             updatedAt: updatedAt,
             backup: makeICloudBackup(),
             sessionModifiedAt: sessionModifiedAtForSync(),
-            deletedSessionIDs: deletedSessionIDsForSync()
+            deletedSessionIDs: deletedSessionIDsForSync(),
+            readerSettingsModifiedAt: readerSettingsModifiedAt()
         )
         do {
             try await ICloudSync.shared.writePayload(payload)
@@ -262,8 +265,7 @@ final class Store: ObservableObject {
         }
 
         goal = remote.goal
-        readerSettings = remote.readerSettings
-        readerSettings.pageCountMode = .paginatedBook
+        mergeRemoteReaderSettings(remote.readerSettings, modifiedAt: payload.readerSettingsModifiedAt)
         reconcileReadableBookFiles()
         normalizeOrder()
         scheduleSave()
@@ -370,6 +372,34 @@ final class Store: ObservableObject {
         if let data = try? encoder.encode(value) {
             UserDefaults.standard.set(data, forKey: key)
         }
+    }
+
+    private func readerSettingsModifiedAt() -> Date {
+        if let date = UserDefaults.standard.object(forKey: Self.readerSettingsModifiedAtKey) as? Date {
+            return date
+        }
+        let date = Date()
+        UserDefaults.standard.set(date, forKey: Self.readerSettingsModifiedAtKey)
+        return date
+    }
+
+    private func markReaderSettingsModified(_ date: Date = Date()) {
+        UserDefaults.standard.set(date, forKey: Self.readerSettingsModifiedAtKey)
+    }
+
+    private func mergeRemoteReaderSettings(_ remote: ReaderSettings, modifiedAt remoteModifiedAt: Date?) {
+        let remoteModifiedAt = remoteModifiedAt ?? .distantPast
+        guard remoteModifiedAt > readerSettingsModifiedAt() else { return }
+        readerSettings = remote
+        readerSettings.pageCountMode = .paginatedBook
+        markReaderSettingsModified(remoteModifiedAt)
+    }
+
+    func updateReaderSettings(_ settings: ReaderSettings) {
+        readerSettings = settings
+        readerSettings.pageCountMode = .paginatedBook
+        markReaderSettingsModified()
+        scheduleSave()
     }
 
     private func liveSessionID(for live: LiveReadingSession) -> String {
@@ -1601,6 +1631,7 @@ final class Store: ObservableObject {
         goal = b.goal
         readerSettings = b.readerSettings
         readerSettings.pageCountMode = .paginatedBook
+        markReaderSettingsModified()
         reconcileReadableBookFiles()
         normalizeOrder()
         scheduleSave()

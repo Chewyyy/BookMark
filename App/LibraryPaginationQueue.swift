@@ -64,6 +64,7 @@ struct LibraryPaginationQueueView: View {
                             advance()
                         }
                     },
+                    onExternalURL: { _ in },
                     onDiagnosticPageTurnResult: { _ in }
                 )
                 .ignoresSafeArea()

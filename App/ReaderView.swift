@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import WebKit
+import SafariServices
 import ReadiumShared
 
 // MARK: - Reader view
@@ -55,6 +56,8 @@ struct ReaderView: View {
     @State private var goalCelebrationTask: Task<Void, Never>?
     @State private var endPromptShown = false
     @State private var finishPromptTarget: Book?
+    @State private var externalURL: BrowserURL?
+    @State private var readerInteractionResetID: UUID?
 
     private var book: Book? { store.books.first { $0.id == bookId } }
 
@@ -162,6 +165,7 @@ struct ReaderView: View {
                     highlights: store.highlights[bookId] ?? [],
                     testCurlPageLabels: model.testCurlPageLabels,
                     showsChrome: showChrome,
+                    interactionResetID: readerInteractionResetID,
                     onLocationChange: { location in
                         model.updateReadiumLocation(location)
                         captureSessionStartIfNeeded()
@@ -190,6 +194,10 @@ struct ReaderView: View {
                     onPublicationReady: { publication in
                         readiumPublication = publication
                         requestAutomaticHiddenPaginationIfNeeded()
+                    },
+                    onExternalURL: { url in
+                        readerInteractionResetID = UUID()
+                        externalURL = BrowserURL(url: url)
                     },
                     onDiagnosticPageTurnResult: { result in
                         diagnosticPageTurnResult = result
@@ -226,6 +234,7 @@ struct ReaderView: View {
                             advanceHiddenPagination()
                         }
                     },
+                    onExternalURL: { _ in },
                     onDiagnosticPageTurnResult: { _ in }
                 )
                 .ignoresSafeArea()
@@ -263,7 +272,7 @@ struct ReaderView: View {
         }
         .toolbar(.hidden, for: .navigationBar)
         .statusBar(hidden: !showChrome)
-        .preferredColorScheme(model.theme.isDark ? .dark : .light)
+        .preferredColorScheme(model.settings.theme == .device ? nil : (model.theme.isDark ? .dark : .light))
         .task { await load() }
         .onAppear {
             sessionStartedAt = Date()
@@ -376,6 +385,12 @@ struct ReaderView: View {
         .sheet(item: $finishPromptTarget) { bk in
             FinishDateSheet(book: bk) { }
                 .presentationDetents([.medium])
+        }
+        .sheet(item: $externalURL, onDismiss: {
+            externalURL = nil
+            readerInteractionResetID = UUID()
+        }) { item in
+            ReaderBrowserSheet(url: item.url)
         }
     }
 
@@ -1562,6 +1577,30 @@ struct ReaderView: View {
     }
 }
 
+private struct BrowserURL: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
+private struct ReaderBrowserSheet: View {
+    let url: URL
+
+    var body: some View {
+        SafariReaderView(url: url)
+            .ignoresSafeArea()
+    }
+}
+
+private struct SafariReaderView: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> SFSafariViewController {
+        SFSafariViewController(url: url)
+    }
+
+    func updateUIViewController(_ controller: SFSafariViewController, context: Context) {}
+}
+
 private struct ReaderPageAuditSheet: View {
     @ObservedObject var model: ReaderModel
     let log: String
@@ -1763,8 +1802,11 @@ private struct ReaderPageAuditSheet: View {
 // MARK: - Theme
 
 enum ReaderThemePalette {
-    static func resolve(_ t: ReaderTheme) -> Palette {
+    static func resolve(_ t: ReaderTheme, colorScheme: ColorScheme? = nil) -> Palette {
         switch t {
+        case .device:
+            let isDark = colorScheme.map { $0 == .dark } ?? (UITraitCollection.current.userInterfaceStyle == .dark)
+            return resolve(isDark ? .night : .original, colorScheme: colorScheme)
         case .original: return Palette(bg: 0xFFFFFF, fg: 0x1A1A1A, sub: 0x7A7D86, accent: 0x2D6A4F, link: 0x0B57D0, isDark: false)
         case .quiet:    return Palette(bg: 0xF2E8D5, fg: 0x3D2E1E, sub: 0x786957, accent: 0x7A5C2E, link: 0x7A5C2E, isDark: false)
         case .paper:    return Palette(bg: 0xFBF8F2, fg: 0x1A1A1A, sub: 0x7A7D86, accent: 0x2D6A4F, link: 0x2D6A4F, isDark: false)

@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct BookMarkApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var store = Store.shared
     @Environment(\.scenePhase) private var scenePhase
     @State private var foregroundSyncTask: Task<Void, Never>?
@@ -14,6 +15,7 @@ struct BookMarkApp: App {
                 .preferredColorScheme(nil)
                 .task {
                     await store.hydrate()
+                    HomeQuickActionRouter.shared.updateShortcut(for: store)
                     await store.syncWithICloud()
                     startForegroundSyncLoop()
                     startForegroundCatchupSyncs()
@@ -35,15 +37,18 @@ struct BookMarkApp: App {
                         switch phase {
                         case .active:
                             await store.syncWithICloud()
+                            HomeQuickActionRouter.shared.updateShortcut(for: store)
                             startForegroundSyncLoop()
                             startForegroundCatchupSyncs()
                             await scanWatchedFolder()
                             await ReadingReminderScheduler.reschedule(for: store, requestAuthorizationIfNeeded: store.hasCompletedOnboarding)
                         case .inactive:
                             stopForegroundSyncLoop()
+                            HomeQuickActionRouter.shared.updateShortcut(for: store)
                             await store.syncWithICloud()
                         case .background:
                             stopForegroundSyncLoop()
+                            HomeQuickActionRouter.shared.updateShortcut(for: store)
                             await store.syncWithICloud()
                             await store.refreshSharedWidgetSnapshot()
                         default:

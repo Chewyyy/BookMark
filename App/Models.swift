@@ -377,7 +377,7 @@ struct ReadingGoal: Codable, Hashable {
 }
 
 enum ReaderTheme: String, Codable, CaseIterable, Hashable {
-    case original, quiet, paper, calm, focus, night
+    case device, original, quiet, paper, calm, focus, night
 }
 
 enum LayoutMargin: String, Codable, CaseIterable, Hashable {
@@ -421,7 +421,7 @@ struct ReaderSettings: Codable, Hashable {
     static let defaultPhoneWordsPerPage = 300
     static let defaultPadWordsPerPage = 450
 
-    var theme: ReaderTheme = .paper
+    var theme: ReaderTheme = .device
     var font: ReaderFont = .original
     var fontSize: Int = 100
     var bold: Bool = false
@@ -470,7 +470,7 @@ struct ReaderSettings: Codable, Hashable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        theme = try c.decodeIfPresent(ReaderTheme.self, forKey: .theme) ?? .paper
+        theme = try c.decodeIfPresent(ReaderTheme.self, forKey: .theme) ?? .device
         font = try c.decodeIfPresent(ReaderFont.self, forKey: .font) ?? .original
         fontSize = try c.decodeIfPresent(Int.self, forKey: .fontSize) ?? 100
         bold = try c.decodeIfPresent(Bool.self, forKey: .bold) ?? false
@@ -478,7 +478,6 @@ struct ReaderSettings: Codable, Hashable {
         margins = try c.decodeIfPresent(LayoutMargin.self, forKey: .margins) ?? .normal
         justify = try c.decodeIfPresent(Bool.self, forKey: .justify) ?? false
         pageAnim = try c.decodeIfPresent(PageAnimation.self, forKey: .pageAnim) ?? .testCurl
-        if pageAnim == .rigid { pageAnim = .curl }
         swipe = try c.decodeIfPresent(Bool.self, forKey: .swipe) ?? true
         keepAwake = try c.decodeIfPresent(Bool.self, forKey: .keepAwake) ?? true
         pageCountMode = .paginatedBook

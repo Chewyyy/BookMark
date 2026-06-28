@@ -203,6 +203,7 @@ enum BackupMigration {
         var s = ReaderSettings()
         if let v = raw["theme"] as? String {
             switch v {
+            case "device", "system": s.theme = .device
             case "original": s.theme = .original
             case "quiet", "sepia": s.theme = .quiet
             case "paper", "light": s.theme = .paper

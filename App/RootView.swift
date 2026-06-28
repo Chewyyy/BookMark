@@ -4,6 +4,7 @@ enum Tab: Hashable { case library, journal, stats }
 
 struct RootView: View {
     @EnvironmentObject private var store: Store
+    @StateObject private var quickActionRouter = HomeQuickActionRouter.shared
     @State private var tab: Tab = .library
     @State private var readingBookId: String? = nil
     @State private var missingBook: Book?
@@ -73,6 +74,19 @@ struct RootView: View {
             OnboardingView()
                 .environmentObject(store)
         }
+        .onAppear(perform: openPendingQuickActionIfReady)
+        .onChange(of: store.didHydrate) { _, _ in
+            openPendingQuickActionIfReady()
+        }
+        .onChange(of: quickActionRouter.pendingBookID) { _, _ in
+            openPendingQuickActionIfReady()
+        }
+    }
+
+    private func openPendingQuickActionIfReady() {
+        guard store.didHydrate, store.hasCompletedOnboarding,
+              let id = quickActionRouter.consumePendingBookID() else { return }
+        openBook(id)
     }
 
     private func openBook(_ id: String) {

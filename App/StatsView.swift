@@ -944,9 +944,10 @@ private struct WordsPerPageSettingsSheet: View {
     }
 
     private func save() {
-        store.readerSettings.wordsPerPageMode = mode
-        store.readerSettings.setWordsPerPageForCurrentDevice(wordsPerPage)
-        store.scheduleSave()
+        var settings = store.readerSettings
+        settings.wordsPerPageMode = mode
+        settings.setWordsPerPageForCurrentDevice(wordsPerPage)
+        store.updateReaderSettings(settings)
         dismiss()
     }
 }
