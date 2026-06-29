@@ -6,7 +6,7 @@
 //
 
 import Testing
-@testable import BookMark
+@testable import BookSmarts
 
 // Tests for the reader chrome's "pages left in part / chapter" logic
 // (`ReaderChromeLogic`). This is the part-vs-chapter decision that feeds the

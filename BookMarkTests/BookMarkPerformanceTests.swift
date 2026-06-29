@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import BookMark
+@testable import BookSmarts
 
 final class BookMarkPerformanceTests: XCTestCase {
     private let performanceMetrics: [XCTMetric] = [

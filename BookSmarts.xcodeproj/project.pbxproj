@@ -32,7 +32,7 @@
 		200EF8A32FE0D2D500DCA2F9 /* ReadiumReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200EF8A22FE0D2D500DCA2F9 /* ReadiumReaderView.swift */; };
 		200EF8AB2FE102CE00DCA2F9 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 200EF8AA2FE102CE00DCA2F9 /* WidgetKit.framework */; };
 		200EF8AD2FE102CE00DCA2F9 /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 200EF8AC2FE102CE00DCA2F9 /* SwiftUI.framework */; };
-		200EF8BC2FE102CF00DCA2F9 /* BookMarkWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 200EF8A82FE102CE00DCA2F9 /* BookMarkWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		200EF8BC2FE102CF00DCA2F9 /* BookSmartsWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 200EF8A82FE102CE00DCA2F9 /* BookSmartsWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		200EF8C52FE1053F00DCA2F9 /* SessionCSV.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200EF8C42FE1053F00DCA2F9 /* SessionCSV.swift */; };
 		200EF8C72FE1067200DCA2F9 /* WidgetRefreshBroker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200EF8C62FE1067200DCA2F9 /* WidgetRefreshBroker.swift */; };
 		200EF8CF2FE1EB7B00DCA2F9 /* AutoBackup.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200EF8CE2FE1EB7B00DCA2F9 /* AutoBackup.swift */; };
@@ -78,7 +78,7 @@
 			dstPath = "";
 			dstSubfolderSpec = 13;
 			files = (
-				200EF8BC2FE102CF00DCA2F9 /* BookMarkWidgetExtension.appex in Embed Foundation Extensions */,
+				200EF8BC2FE102CF00DCA2F9 /* BookSmartsWidgetExtension.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -102,7 +102,7 @@
 		200EF88F2FE0BF3200DCA2F9 /* ReaderSheets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderSheets.swift; sourceTree = "<group>"; };
 		200EF8912FE0BF6200DCA2F9 /* BackupMigration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupMigration.swift; sourceTree = "<group>"; };
 		200EF8A22FE0D2D500DCA2F9 /* ReadiumReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadiumReaderView.swift; sourceTree = "<group>"; };
-		200EF8A82FE102CE00DCA2F9 /* BookMarkWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = BookMarkWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		200EF8A82FE102CE00DCA2F9 /* BookSmartsWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = BookSmartsWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		200EF8AA2FE102CE00DCA2F9 /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
 		200EF8AC2FE102CE00DCA2F9 /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
 		200EF8C22FE1033C00DCA2F9 /* BookMarkWidgetExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = BookMarkWidgetExtension.entitlements; sourceTree = "<group>"; };
@@ -118,7 +118,7 @@
 		207960942FE6F5F100EFF622 /* HomeHeaderOptionsPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeHeaderOptionsPreview.swift; sourceTree = "<group>"; };
 		207960962FE6F9B100EFF622 /* CoverShelfHeaderIterationsPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoverShelfHeaderIterationsPreview.swift; sourceTree = "<group>"; };
 		207960992FE715F000EFF622 /* BookMarkPerformanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookMarkPerformanceTests.swift; sourceTree = "<group>"; };
-		2079609E2FE7172800EFF622 /* BookMarkTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BookMarkTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		2079609E2FE7172800EFF622 /* BookSmartsTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BookSmartsTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		209F91902FF1DF9E00BEA07F /* HomeQuickActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeQuickActions.swift; sourceTree = "<group>"; };
 		20A9454D2FE783D30094AE35 /* PageCurlMetalRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageCurlMetalRenderer.swift; sourceTree = "<group>"; };
 		20C74B652FEF54080028764A /* ICloudSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ICloudSync.swift; sourceTree = "<group>"; };
@@ -126,7 +126,7 @@
 		20E004542FE4D0CF001EC030 /* EPUBWordCounter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EPUBWordCounter.swift; sourceTree = "<group>"; };
 		20E004562FE58979001EC030 /* ReadingSpeedEstimator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingSpeedEstimator.swift; sourceTree = "<group>"; };
 		20E004582FE5F083001EC030 /* LibraryPaginationQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryPaginationQueue.swift; sourceTree = "<group>"; };
-		504EC3041FED79650016851F /* BookMark.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BookMark.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		504EC3041FED79650016851F /* BookSmarts.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BookSmarts.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		504EC30E1FED79650016851F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		504EC3111FED79650016851F /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/LaunchScreen.storyboard; sourceTree = "<group>"; };
 		504EC3131FED79650016851F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -139,7 +139,7 @@
 			membershipExceptions = (
 				Info.plist,
 			);
-			target = 200EF8A72FE102CE00DCA2F9 /* BookMarkWidgetExtension */;
+			target = 200EF8A72FE102CE00DCA2F9 /* BookSmartsWidgetExtension */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
@@ -225,9 +225,9 @@
 		504EC3051FED79650016851F /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				504EC3041FED79650016851F /* BookMark.app */,
-				200EF8A82FE102CE00DCA2F9 /* BookMarkWidgetExtension.appex */,
-				2079609E2FE7172800EFF622 /* BookMarkTests.xctest */,
+				504EC3041FED79650016851F /* BookSmarts.app */,
+				200EF8A82FE102CE00DCA2F9 /* BookSmartsWidgetExtension.appex */,
+				2079609E2FE7172800EFF622 /* BookSmartsTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -278,9 +278,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		200EF8A72FE102CE00DCA2F9 /* BookMarkWidgetExtension */ = {
+		200EF8A72FE102CE00DCA2F9 /* BookSmartsWidgetExtension */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 200EF8BE2FE102CF00DCA2F9 /* Build configuration list for PBXNativeTarget "BookMarkWidgetExtension" */;
+			buildConfigurationList = 200EF8BE2FE102CF00DCA2F9 /* Build configuration list for PBXNativeTarget "BookSmartsWidgetExtension" */;
 			buildPhases = (
 				200EF8A42FE102CE00DCA2F9 /* Sources */,
 				200EF8A52FE102CE00DCA2F9 /* Frameworks */,
@@ -293,16 +293,16 @@
 			fileSystemSynchronizedGroups = (
 				200EF8AE2FE102CE00DCA2F9 /* BookMarkWidget */,
 			);
-			name = BookMarkWidgetExtension;
+			name = BookSmartsWidgetExtension;
 			packageProductDependencies = (
 			);
 			productName = BookMarkWidgetExtension;
-			productReference = 200EF8A82FE102CE00DCA2F9 /* BookMarkWidgetExtension.appex */;
+			productReference = 200EF8A82FE102CE00DCA2F9 /* BookSmartsWidgetExtension.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
-		2079609D2FE7172800EFF622 /* BookMarkTests */ = {
+		2079609D2FE7172800EFF622 /* BookSmartsTests */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 207960A42FE7172800EFF622 /* Build configuration list for PBXNativeTarget "BookMarkTests" */;
+			buildConfigurationList = 207960A42FE7172800EFF622 /* Build configuration list for PBXNativeTarget "BookSmartsTests" */;
 			buildPhases = (
 				2079609A2FE7172800EFF622 /* Sources */,
 				2079609B2FE7172800EFF622 /* Frameworks */,
@@ -316,16 +316,16 @@
 			fileSystemSynchronizedGroups = (
 				2079609F2FE7172800EFF622 /* BookMarkTests */,
 			);
-			name = BookMarkTests;
+			name = BookSmartsTests;
 			packageProductDependencies = (
 			);
 			productName = BookMarkTests;
-			productReference = 2079609E2FE7172800EFF622 /* BookMarkTests.xctest */;
+			productReference = 2079609E2FE7172800EFF622 /* BookSmartsTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
-		504EC3031FED79650016851F /* BookMark */ = {
+		504EC3031FED79650016851F /* BookSmarts */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 504EC3161FED79650016851F /* Build configuration list for PBXNativeTarget "BookMark" */;
+			buildConfigurationList = 504EC3161FED79650016851F /* Build configuration list for PBXNativeTarget "BookSmarts" */;
 			buildPhases = (
 				504EC3001FED79650016851F /* Sources */,
 				504EC3011FED79650016851F /* Frameworks */,
@@ -337,7 +337,7 @@
 			dependencies = (
 				200EF8BB2FE102CF00DCA2F9 /* PBXTargetDependency */,
 			);
-			name = BookMark;
+			name = BookSmarts;
 			packageProductDependencies = (
 				200EF8942FE0D1B400DCA2F9 /* ReadiumAdapterGCDWebServer */,
 				200EF8962FE0D1B400DCA2F9 /* ReadiumAdapterLCPSQLite */,
@@ -348,7 +348,7 @@
 				200EF8A02FE0D1B400DCA2F9 /* ReadiumStreamer */,
 			);
 			productName = App;
-			productReference = 504EC3041FED79650016851F /* BookMark.app */;
+			productReference = 504EC3041FED79650016851F /* BookSmarts.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -374,7 +374,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 504EC2FF1FED79650016851F /* Build configuration list for PBXProject "BookMark" */;
+			buildConfigurationList = 504EC2FF1FED79650016851F /* Build configuration list for PBXProject "BookSmarts" */;
 			compatibilityVersion = "Xcode 8.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
@@ -390,9 +390,9 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				504EC3031FED79650016851F /* BookMark */,
-				200EF8A72FE102CE00DCA2F9 /* BookMarkWidgetExtension */,
-				2079609D2FE7172800EFF622 /* BookMarkTests */,
+				504EC3031FED79650016851F /* BookSmarts */,
+				200EF8A72FE102CE00DCA2F9 /* BookSmartsWidgetExtension */,
+				2079609D2FE7172800EFF622 /* BookSmartsTests */,
 			);
 		};
 /* End PBXProject section */
@@ -483,12 +483,12 @@
 /* Begin PBXTargetDependency section */
 		200EF8BB2FE102CF00DCA2F9 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = 200EF8A72FE102CE00DCA2F9 /* BookMarkWidgetExtension */;
+			target = 200EF8A72FE102CE00DCA2F9 /* BookSmartsWidgetExtension */;
 			targetProxy = 200EF8BA2FE102CF00DCA2F9 /* PBXContainerItemProxy */;
 		};
 		207960A32FE7172800EFF622 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = 504EC3031FED79650016851F /* BookMark */;
+			target = 504EC3031FED79650016851F /* BookSmarts */;
 			targetProxy = 207960A22FE7172800EFF622 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
@@ -621,7 +621,7 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/BookMark.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/BookMark";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/BookSmarts.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/BookSmarts";
 			};
 			name = Debug;
 		};
@@ -653,7 +653,7 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/BookMark.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/BookMark";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/BookSmarts.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/BookSmarts";
 			};
 			name = Release;
 		};
@@ -777,7 +777,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = RNZXHS2KVQ;
 				INFOPLIST_FILE = App/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = BookMark;
+				INFOPLIST_KEY_CFBundleDisplayName = BookSmarts;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.books";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -804,7 +804,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = RNZXHS2KVQ;
 				INFOPLIST_FILE = App/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = BookMark;
+				INFOPLIST_KEY_CFBundleDisplayName = BookSmarts;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.books";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -823,7 +823,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		200EF8BE2FE102CF00DCA2F9 /* Build configuration list for PBXNativeTarget "BookMarkWidgetExtension" */ = {
+		200EF8BE2FE102CF00DCA2F9 /* Build configuration list for PBXNativeTarget "BookSmartsWidgetExtension" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				200EF8BF2FE102CF00DCA2F9 /* Debug */,
@@ -832,7 +832,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		207960A42FE7172800EFF622 /* Build configuration list for PBXNativeTarget "BookMarkTests" */ = {
+		207960A42FE7172800EFF622 /* Build configuration list for PBXNativeTarget "BookSmartsTests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				207960A52FE7172800EFF622 /* Debug */,
@@ -841,7 +841,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		504EC2FF1FED79650016851F /* Build configuration list for PBXProject "BookMark" */ = {
+		504EC2FF1FED79650016851F /* Build configuration list for PBXProject "BookSmarts" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				504EC3141FED79650016851F /* Debug */,
@@ -850,7 +850,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		504EC3161FED79650016851F /* Build configuration list for PBXNativeTarget "BookMark" */ = {
+		504EC3161FED79650016851F /* Build configuration list for PBXNativeTarget "BookSmarts" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				504EC3171FED79650016851F /* Debug */,
