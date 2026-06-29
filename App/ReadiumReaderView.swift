@@ -987,42 +987,46 @@ struct ReadiumEPUBNavigatorView: UIViewControllerRepresentable {
                 }
                 style.textContent = \(cssLiteral);
 
-                var urlPattern = /\\b((?:https?:\\/\\/|www\\.)[^\\s<>{}]+[^\\s<>{}.,;:!?)]?)/gi;
-                var skipTags = new Set(['A', 'SCRIPT', 'STYLE', 'TEXTAREA', 'INPUT', 'CODE', 'PRE']);
-                var walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT, {
-                    acceptNode: function(node) {
-                        var parent = node.parentElement;
-                        if (!parent || skipTags.has(parent.tagName) || parent.closest('a')) {
-                            return NodeFilter.FILTER_REJECT;
-                        }
-                        urlPattern.lastIndex = 0;
-                        return urlPattern.test(node.nodeValue || '') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+                var tocTargetPattern = /(?:^|\\/)(?:toc|nav|contents?|table[-_]?of[-_]?contents?)(?:\\.[^\\/#?]+)?(?:[#?]|$)|\\.ncx(?:[#?]|$)/i;
+                var headingSelector = 'h1,h2,h3,h4,h5,h6,[role="heading"]';
+                var hasTitleLikeType = function(element) {
+                    var current = element;
+                    while (current && current !== document.body && current !== document.documentElement) {
+                        var type = current.getAttribute && (current.getAttribute('epub:type') || current.getAttribute('type') || '');
+                        if (/\\b(?:title|chapter)\\b/i.test(type)) { return true; }
+                        current = current.parentElement;
                     }
-                });
-                var nodes = [];
-                while (walker.nextNode()) { nodes.push(walker.currentNode); }
-                nodes.forEach(function(node) {
-                    var text = node.nodeValue || '';
-                    urlPattern.lastIndex = 0;
-                    var fragment = document.createDocumentFragment();
-                    var lastIndex = 0;
-                    text.replace(urlPattern, function(match, rawURL, offset) {
-                        if (offset > lastIndex) {
-                            fragment.appendChild(document.createTextNode(text.slice(lastIndex, offset)));
-                        }
-                        var anchor = document.createElement('a');
-                        anchor.textContent = rawURL;
-                        anchor.href = rawURL.match(/^https?:\\/\\//i) ? rawURL : 'https://' + rawURL;
-                        anchor.setAttribute('data-bookmark-autolink', 'true');
-                        fragment.appendChild(anchor);
-                        lastIndex = offset + rawURL.length;
-                        return match;
+                    return false;
+                };
+                var disableContentLink = function(anchor) {
+                    anchor.setAttribute('data-bookmark-disabled-content-link', 'true');
+                    anchor.removeAttribute('href');
+                    anchor.style.setProperty('color', 'inherit', 'important');
+                    anchor.style.setProperty('cursor', 'text', 'important');
+                    anchor.style.setProperty('pointer-events', 'none', 'important');
+                    anchor.style.setProperty('text-decoration', 'none', 'important');
+                };
+                var disableChapterBacklinks = function() {
+                    document.querySelectorAll('a[href]').forEach(function(anchor) {
+                        var href = anchor.getAttribute('href') || '';
+                        var absoluteHref = anchor.href || '';
+                        var isTOCBacklink = tocTargetPattern.test(href) || tocTargetPattern.test(absoluteHref);
+                        var isHeadingLink = !!(anchor.closest(headingSelector) || anchor.querySelector(headingSelector) || hasTitleLikeType(anchor));
+                        if (!isTOCBacklink && !isHeadingLink) { return; }
+                        disableContentLink(anchor);
                     });
-                    if (lastIndex < text.length) {
-                        fragment.appendChild(document.createTextNode(text.slice(lastIndex)));
-                    }
-                    node.parentNode.replaceChild(fragment, node);
-                });
+                };
+                disableChapterBacklinks();
+
+                if (!window.__bookmarkChapterBacklinkGuardInstalled) {
+                    window.__bookmarkChapterBacklinkGuardInstalled = true;
+                    document.addEventListener('click', function(event) {
+                        var anchor = event.target && event.target.closest && event.target.closest('a[data-bookmark-disabled-content-link]');
+                        if (!anchor) { return; }
+                        event.preventDefault();
+                        event.stopPropagation();
+                    }, true);
+                }
 
                 if (!window.__bookmarkSelectionRecoveryInstalled) {
                     window.__bookmarkSelectionRecoveryInstalled = true;

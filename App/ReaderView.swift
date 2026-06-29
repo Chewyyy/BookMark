@@ -2153,9 +2153,6 @@ final class ReaderModel: ObservableObject {
     var statusBottom: String {
         if epubURL != nil {
             let percent = Int((overallProgress * 100).rounded())
-            if let label = readiumPublisherPageLabel, let total = readiumPublisherPageTotal, total > 0 {
-                return "Page \(label) of \(total) · \(percent)%"
-            }
             // Viewport-aware chapter mode — pulls from Readium's
             // NavigatorViewport, refreshes with font/spread changes.
             if settings.pageCountMode == .viewportChapter,
@@ -2175,6 +2172,9 @@ final class ReaderModel: ObservableObject {
                let total = viewportBookPageTotal {
                 return "Page \(page) of \(total) · \(percent)%"
             }
+            if let label = readiumPublisherPageLabel, let total = readiumPublisherPageTotal, total > 0 {
+                return "Page \(label) of \(total) · \(percent)%"
+            }
             // Visible page = Readium's raw position. The +1-per-swipe override
             // (`displayPageOverride`) still ticks in the background and is read
             // by `displayPage` for sessions/bookmarks — flipping the visible
@@ -2186,12 +2186,16 @@ final class ReaderModel: ObservableObject {
 
     var pageOnlyText: String {
         if epubURL != nil {
-            if let label = readiumPublisherPageLabel {
-                return "Page \(label)"
-            }
             if settings.pageCountMode == .paginatedBook,
                let page = paginatedBookCurrentPage {
                 return "Page \(page)"
+            }
+            if settings.pageCountMode == .viewportBook,
+               let page = viewportBookCurrentPage {
+                return "Page \(page)"
+            }
+            if let label = readiumPublisherPageLabel {
+                return "Page \(label)"
             }
             return "Page \(rawDisplayPage)"
         }
@@ -2201,10 +2205,6 @@ final class ReaderModel: ObservableObject {
     var testCurlPageLabels: TestCurlPageLabels {
         if epubURL != nil {
             guard readiumDisplayIsReady else { return .empty }
-            if let label = readiumPublisherPageLabel,
-               let page = Int(label.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                return TestCurlPageLabels(currentPage: page, totalPages: readiumPublisherPageTotal)
-            }
             if settings.pageCountMode == .viewportChapter,
                let state = readiumChapterPageState {
                 return TestCurlPageLabels(currentPage: state.currentPage, totalPages: state.totalPages)
@@ -2216,6 +2216,10 @@ final class ReaderModel: ObservableObject {
             if settings.pageCountMode == .viewportBook,
                let page = viewportBookCurrentPage {
                 return TestCurlPageLabels(currentPage: page, totalPages: viewportBookPageTotal)
+            }
+            if let label = readiumPublisherPageLabel,
+               let page = Int(label.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                return TestCurlPageLabels(currentPage: page, totalPages: readiumPublisherPageTotal)
             }
             return TestCurlPageLabels(currentPage: rawDisplayPage, totalPages: displayPageTotal)
         }
